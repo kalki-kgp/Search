@@ -62,6 +62,16 @@ enum Web {
         typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
         unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, on)
     }
+
+    /// A test run's pretend camera and microphone, so the capture corner can
+    /// be tried without the real ones (`defaults write … capture.mock`).
+    static func mockCapture(_ preferences: WKPreferences) {
+        guard Store.world != nil, Store.settings.bool(forKey: "capture.mock") else { return }
+        let set = NSSelectorFromString("_setMockCaptureDevicesEnabled:")
+        guard preferences.responds(to: set) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, true)
+    }
 }
 
 @MainActor
@@ -189,6 +199,28 @@ final class Tab: ObservableObject, Identifiable {
     /// which tab it is coming from.
     @Published var noisy = false
 
+    /// WebKit's word on the camera and microphone, and the names the page's
+    /// frames gave them (see Capture.swift).
+    @Published private(set) var camera: WKMediaCaptureState = .none
+    @Published private(set) var microphone: WKMediaCaptureState = .none
+    @Published private(set) var devices: [Device] = []
+    private var framesDevices: [String: [Device]] = [:]
+    var onCapture: ((Tab) -> Void)?
+
+    func heard(_ found: [Device], from frame: String) {
+        framesDevices[frame] = found.isEmpty ? nil : found
+        devices = framesDevices.keys.sorted().flatMap { framesDevices[$0] ?? [] }
+        onCapture?(self)
+    }
+
+    /// A new document: the frames that named things are gone with the old one.
+    func forgetDevices() {
+        guard !framesDevices.isEmpty else { return }
+        framesDevices = [:]
+        devices = []
+        onCapture?(self)
+    }
+
     /// What the page hands back when you point at something and click it.
     var onPick: ((Tab, String, String, String) -> Void)?
     /// The page has a sign-in on it; the page has just sent one.
@@ -216,6 +248,7 @@ final class Tab: ObservableObject, Identifiable {
     private let forms = FormRelay()
     private let images = ImageRelay()
     private let shop = StoreRelay()
+    private let capture = CaptureRelay()
     private let ears = AudioWatch()
     private var lastY: Double = 0
 
@@ -306,6 +339,7 @@ final class Tab: ObservableObject, Identifiable {
         if #available(macOS 13.3, *) { web.isInspectable = true }
         Web.pages.add(web)
         Web.inspector(web.configuration.preferences)
+        Web.mockCapture(web.configuration.preferences)
         web.navigationDelegate = delegate
         web.uiDelegate = delegate
 
@@ -318,7 +352,9 @@ final class Tab: ObservableObject, Identifiable {
         controller.removeScriptMessageHandler(forName: FormRelay.name)
         controller.removeScriptMessageHandler(forName: ImageRelay.name)
         controller.removeScriptMessageHandler(forName: StoreRelay.name)
+        controller.removeScriptMessageHandler(forName: CaptureRelay.name)
         controller.add(relay, name: ScrollRelay.name)
+        controller.add(capture, name: CaptureRelay.name)
         controller.add(veils_, name: VeilRelay.name)
         controller.add(images, name: ImageRelay.name)
         controller.add(shop, name: StoreRelay.name)
@@ -357,6 +393,20 @@ final class Tab: ObservableObject, Identifiable {
             web.observe(\.canGoForward, options: [.new]) { [weak self] _, _ in
                 MainActor.assumeIsolated { self?.canGoForward = self?.built?.canGoForward ?? false }
             },
+            web.observe(\.cameraCaptureState, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.camera = self.built?.cameraCaptureState ?? .none
+                    self.onCapture?(self)
+                }
+            },
+            web.observe(\.microphoneCaptureState, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.microphone = self.built?.microphoneCaptureState ?? .none
+                    self.onCapture?(self)
+                }
+            },
         ]
 
         relay.tab = self
@@ -364,6 +414,7 @@ final class Tab: ObservableObject, Identifiable {
         forms.tab = self
         images.tab = self
         shop.tab = self
+        capture.tab = self
         ears.watch(web) { [weak self] on in self?.noisy = on }
         return web
     }
@@ -422,6 +473,10 @@ final class Tab: ObservableObject, Identifiable {
         )
         controller.addUserScript(
             WKUserScript(source: StoreRelay.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        )
+        // Every frame: a call is often an embed on someone else's page.
+        controller.addUserScript(
+            WKUserScript(source: CaptureRelay.watch, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
         if !FormRelay.passkeysOffered {
             controller.addUserScript(
@@ -879,6 +934,9 @@ final class Tab: ObservableObject, Identifiable {
     private func discard() {
         watch = []
         ears.stop()
+        camera = .none
+        microphone = .none
+        forgetDevices()
         guard let web = built else { return }
         built = nil
         let controller = web.configuration.userContentController
@@ -887,6 +945,7 @@ final class Tab: ObservableObject, Identifiable {
         controller.removeScriptMessageHandler(forName: FormRelay.name)
         controller.removeScriptMessageHandler(forName: ImageRelay.name)
         controller.removeScriptMessageHandler(forName: StoreRelay.name)
+        controller.removeScriptMessageHandler(forName: CaptureRelay.name)
         controller.removeAllUserScripts()
         web.onPull = nil
         web.onTouch = nil

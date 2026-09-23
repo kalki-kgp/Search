@@ -18,6 +18,9 @@ struct TabBar: View {
     @State private var plussed = false
     /// How wide the doors at the far end are, extension buttons included.
     @State private var doors: CGFloat = 0
+    /// Full screen hides the traffic lights, and who has the camera or the
+    /// microphone takes their corner; otherwise it sits just after them.
+    @State private var fullScreen = Links.window?.styleMask.contains(.fullScreen) ?? false
 
     var body: some View {
         // A GeometryReader is only here to measure the width. Its content is
@@ -34,8 +37,14 @@ struct TabBar: View {
                 // the one stretch left to take hold of when tabs fill the row.
                 DragStrip()
                     .frame(width: Metrics.lights)
+                if fullScreen {
+                    CaptureCorner(browser: browser)
+                        .padding(.leading, 12)
+                        .frame(maxWidth: Metrics.lights, alignment: .leading)
+                }
 
                 HStack(spacing: Metrics.tabGap) {
+                    if !fullScreen { CaptureCorner(browser: browser) }
                     // The space on screen, first, when there are spaces.
                     if browser.prefs.usesSpaces { SpaceDot(browser: browser) }
 
@@ -143,6 +152,10 @@ struct TabBar: View {
         }
         .frame(height: Metrics.strip)
         .onHover { nearby = $0 }
+        .animation(Motion.settle, value: browser.capturing)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in fullScreen = true }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in fullScreen = false }
+        .onAppear { fullScreen = Links.window?.styleMask.contains(.fullScreen) ?? false }
         // A link dragged onto the row opens there.
         .onDrop(of: [.url, .text], isTargeted: $landing) { providers in
             browser.take(providers)
@@ -228,7 +241,11 @@ struct TabBar: View {
     }
 
     /// What the space's dot takes before the tabs, when there are spaces.
-    private var dot: CGFloat { browser.prefs.usesSpaces ? SpaceDot.width + Metrics.tabGap : 0 }
+    private var dot: CGFloat {
+        let capture = fullScreen ? 0 : CaptureCorner.width(for: browser.capturingTabs)
+        return (browser.prefs.usesSpaces ? SpaceDot.width + Metrics.tabGap : 0)
+            + (capture > 0 ? capture + Metrics.tabGap : 0)
+    }
 
     /// Every loose tab is the same width, so the cross is always in the same
     /// place. Past a dozen or so they start giving ground; too narrow for a

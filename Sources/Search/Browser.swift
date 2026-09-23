@@ -92,6 +92,12 @@ final class Browser: NSObject, ObservableObject {
     /// ⌘S: the column folded away, and slid out over the page for a look
     /// while it is (see Fold.swift).
     @Published var folded = false
+    /// The tabs with the camera, microphone or screen (see Capture.swift).
+    @Published private(set) var capturing: [Tab.ID] = []
+    var capturingTabs: [Tab] { capturing.compactMap { id in tabs.first { $0.id == id } } }
+    func recountCapture() {
+        capturing = tabs.filter(\.onAir).map(\.id)
+    }
     @Published var peeking = false
 
     /// The address field, raised over a page by ⌘L. A blank tab shows it
@@ -1402,6 +1408,7 @@ final class Browser: NSObject, ObservableObject {
         tab.onPickEnd = { [weak self] _ in self?.veiling = false }
         tab.onImageMenu = { [weak self] tab, url in self?.showImageMenu(for: tab, at: url) }
         tab.onStoreAdd = { [weak self] tab in self?.addFromStore(tab) }
+        tab.onCapture = { [weak self] _ in self?.recountCapture() }
 
         // The caret in a sign-in box: the accounts kept for this site hang
         // from the box, and go when the caret does. Nothing is filled on
@@ -1894,6 +1901,7 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         guard let tab = tab(for: webView) else { return }
         tab.failure = nil
         tab.typing = false
+        tab.forgetDevices()
         // Whatever you last set this site to, before it draws a single frame
         // at the wrong size.
         tab.applyRememberedZoom()
