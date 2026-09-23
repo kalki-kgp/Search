@@ -148,7 +148,7 @@ final class Preferences: ObservableObject {
         sideHides = store.bool(forKey: "sidebar.hides")
         let width = store.object(forKey: "sidebar.width") as? Double ?? Double(Metrics.side)
         sideWidth = min(Metrics.sideMax, max(Metrics.sideMin, CGFloat(width)))
-        glyph = store.string(forKey: "glyph").flatMap(Glyph.init) ?? .letters
+        glyph = store.string(forKey: "glyph").flatMap(Glyph.init) ?? .icons
         engine = store.string(forKey: "search.engine").flatMap(Engine.init) ?? .standard
         customEngine = store.string(forKey: "search.custom") ?? ""
         sleepsTabs = store.object(forKey: "tabs.sleep") as? Bool ?? true
