@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 import WebKit
 
-// Who has the camera, the microphone or the screen, in the corner the traffic
-// lights leave empty in full screen — and beside them otherwise.
+// What pages may use and who is using it — the camera, the microphone, the
+// screen — in the corner the traffic lights leave empty in full screen, and
+// beside them otherwise.
 //
 // WebKit says whether a page is capturing (cameraCaptureState and
 // microphoneCaptureState, one of each per web view) but not with what. The
@@ -13,7 +14,7 @@ import WebKit
 // stay the word on whether anything is live; the page only names it.
 //
 // Nothing runs while nothing is capturing: the wrapper waits for a page to
-// ask, and the corner is empty until one has.
+// ask, and the corner's button stays grey until one has.
 
 struct Device: Equatable {
     enum Kind: String { case camera, microphone, screen }
@@ -106,78 +107,40 @@ extension Tab {
     }
 }
 
-/// The corner: whose icon, and what they have. A click lists each tab with
-/// its devices by name, and lets you mute or stop them.
+/// The corner: one button for what pages may use. Grey while nothing is,
+/// in the colour of what is live while something is — green for a camera,
+/// orange for a microphone, purple for the screen, the way macOS marks them.
+/// A click lists who has what, and what this site has been allowed.
 struct CaptureCorner: View {
     @ObservedObject var browser: Browser
     @State private var hovering = false
 
-    static let most = 2
-
-    /// Worked out rather than measured, so the row can make room for it
-    /// before it is drawn.
-    static func width(for tabs: [Tab]) -> CGFloat {
-        guard !tabs.isEmpty else { return 0 }
-        let marks = CGFloat(min(tabs.count, most)) + (tabs.count > most ? 1 : 0)
-        let kinds = CGFloat(Set(tabs.flatMap(kinds(of:))).count)
-        return 12 + (marks + kinds) * 14 + (marks + kinds - 1) * 4
-    }
-
-    private static func kinds(of tab: Tab) -> [Device.Kind] {
-        var out: [Device.Kind] = []
-        if tab.camera != .none { out.append(.camera) }
-        if tab.microphone != .none { out.append(.microphone) }
-        if tab.devices.contains(where: { $0.kind == .screen }) { out.append(.screen) }
-        return out
-    }
+    static let width: CGFloat = 26
 
     var body: some View {
         let tabs = browser.capturingTabs
-        if !tabs.isEmpty {
-            Button { CaptureMenu.show(for: tabs, browser: browser) } label: {
-                HStack(spacing: 4) {
-                    ForEach(tabs.prefix(Self.most)) { tab in
-                        Mark(icon: tab.icon, letter: tab.monogram, size: 14)
-                    }
-                    if tabs.count > Self.most {
-                        Text("+\(tabs.count - Self.most)")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Palette.muted)
-                            .frame(width: 14)
-                    }
-                    if tabs.contains(where: { $0.camera != .none }) {
-                        glyph(tabs.contains { $0.camera == .active } ? "video.fill" : "video.slash.fill",
-                              .green, live: tabs.contains { $0.camera == .active })
-                    }
-                    if tabs.contains(where: { $0.microphone != .none }) {
-                        glyph(tabs.contains { $0.microphone == .active } ? "mic.fill" : "mic.slash.fill",
-                              .orange, live: tabs.contains { $0.microphone == .active })
-                    }
-                    if tabs.contains(where: { $0.devices.contains { $0.kind == .screen } }) {
-                        glyph("rectangle.inset.filled.on.rectangle", .purple, live: true)
-                    }
-                }
-                .padding(.horizontal, 6)
-                .frame(height: 26)
+        Button { CaptureMenu.show(for: tabs, browser: browser) } label: {
+            Image(systemName: tabs.isEmpty ? "hand.raised" : "hand.raised.fill")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(tint(tabs))
+                .frame(width: Self.width, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(hovering ? Palette.hover : .clear)
                 )
                 .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .onHover { hovering = $0 }
-            .help(tabs.map(CaptureMenu.summary).joined(separator: "\n"))
-            .animation(Motion.quick, value: hovering)
-            .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .leading)))
         }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(tabs.isEmpty ? "Permissions" : tabs.map(CaptureMenu.summary).joined(separator: "\n"))
+        .animation(Motion.quick, value: hovering)
     }
 
-    private func glyph(_ name: String, _ colour: Color, live: Bool) -> some View {
-        Image(systemName: name)
-            .font(.system(size: 10.5, weight: .semibold))
-            .foregroundStyle(live ? colour : Palette.muted)
-            .frame(width: 14, height: 14)
+    private func tint(_ tabs: [Tab]) -> Color {
+        if tabs.contains(where: { $0.camera == .active }) { return .green }
+        if tabs.contains(where: { $0.microphone == .active }) { return .orange }
+        if tabs.contains(where: { $0.devices.contains { $0.kind == .screen } }) { return .purple }
+        return Palette.muted
     }
 }
 
@@ -234,6 +197,9 @@ enum CaptureMenu {
         actions = []
         let menu = NSMenu()
         menu.autoenablesItems = false
+        if tabs.isEmpty {
+            menu.addItem(heading("Nothing is using the camera or microphone"))
+        }
         for (i, tab) in tabs.enumerated() {
             if i > 0 { menu.addItem(.separator()) }
             let head = item(tab.address?.host() ?? tab.title) { browser.select(tab) }
@@ -271,7 +237,50 @@ enum CaptureMenu {
                 })
             }
         }
+        if let host = browser.active?.address?.host(), !host.isEmpty {
+            menu.addItem(.separator())
+            site(host, into: menu)
+        }
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         actions = []
+    }
+
+    private static func heading(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    /// What the site in front has been allowed or refused, each one open to
+    /// change: the choice is kept under capture.<host>|<WKMediaCaptureType>,
+    /// the same key the question at the top of the page writes.
+    private static func site(_ host: String, into menu: NSMenu) {
+        menu.addItem(heading(host))
+        let kinds: [(WKMediaCaptureType, String, String)] = [
+            (.camera, "Camera", "video"),
+            (.microphone, "Microphone", "mic"),
+            (.cameraAndMicrophone, "Camera and Microphone", "video.badge.waveform"),
+        ]
+        for (type, name, symbol) in kinds {
+            let key = "capture.\(host)|\(type.rawValue)"
+            // The pair is only asked for together; it gets a row once it has been.
+            guard type != .cameraAndMicrophone || Store.settings.object(forKey: key) != nil else { continue }
+            let choice = Store.settings.object(forKey: key) as? Bool
+            let row = NSMenuItem(title: "\(name): \(choice == true ? "Allowed" : choice == false ? "Blocked" : "Ask")",
+                                 action: nil, keyEquivalent: "")
+            row.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            let sub = NSMenu()
+            sub.autoenablesItems = false
+            for (title, value) in [("Allow", true as Bool?), ("Block", false), ("Ask", nil)] {
+                let option = item(title) {
+                    if let value { Store.settings.set(value, forKey: key) }
+                    else { Store.settings.removeObject(forKey: key) }
+                }
+                option.state = choice == value ? .on : .off
+                sub.addItem(option)
+            }
+            row.submenu = sub
+            menu.addItem(row)
+        }
     }
 }

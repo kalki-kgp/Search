@@ -18,8 +18,8 @@ struct TabBar: View {
     @State private var plussed = false
     /// How wide the doors at the far end are, extension buttons included.
     @State private var doors: CGFloat = 0
-    /// Full screen hides the traffic lights, and who has the camera or the
-    /// microphone takes their corner; otherwise it sits just after them.
+    /// Full screen hides the traffic lights, and the permissions button takes
+    /// their corner; otherwise it sits just after them.
     @State private var fullScreen = Links.window?.styleMask.contains(.fullScreen) ?? false
 
     var body: some View {
@@ -152,7 +152,6 @@ struct TabBar: View {
         }
         .frame(height: Metrics.strip)
         .onHover { nearby = $0 }
-        .animation(Motion.settle, value: browser.capturing)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in fullScreen = true }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in fullScreen = false }
         .onAppear { fullScreen = Links.window?.styleMask.contains(.fullScreen) ?? false }
@@ -242,9 +241,8 @@ struct TabBar: View {
 
     /// What the space's dot takes before the tabs, when there are spaces.
     private var dot: CGFloat {
-        let capture = fullScreen ? 0 : CaptureCorner.width(for: browser.capturingTabs)
         return (browser.prefs.usesSpaces ? SpaceDot.width + Metrics.tabGap : 0)
-            + (capture > 0 ? capture + Metrics.tabGap : 0)
+            + (fullScreen ? 0 : CaptureCorner.width + Metrics.tabGap)
     }
 
     /// Every loose tab is the same width, so the cross is always in the same
