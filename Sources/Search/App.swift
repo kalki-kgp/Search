@@ -652,16 +652,35 @@ struct ContentView: View {
         // whole window, title bar included, and its layer was compositing over
         // the title bar's own. AppKit's subview order said otherwise; Core
         // Animation is the one actually deciding, so it is told directly.
-        DispatchQueue.main.async {
-            guard let close = window.standardWindowButton(.closeButton),
-                  let container = close.superview?.superview,
-                  let content = window.contentView,
-                  let frame = content.superview
-            else { return }
-            frame.addSubview(container, positioned: .above, relativeTo: content)
-            container.wantsLayer = true
-            container.layer?.zPosition = 10
+        //
+        // Only in a window. Full screen keeps the title bar in a window of its
+        // own that slides down under the menu bar; taken out of it into this
+        // one, the lights came up at the foot of the screen. So it waits for
+        // full screen to end, when AppKit has put the bar back here.
+        DispatchQueue.main.async { raiseLights(window) }
+        guard ContentView.raising.insert(ObjectIdentifier(window)).inserted else { return }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { raiseLights(window) }
         }
+    }
+
+    /// Windows already listening for full screen to end.
+    @MainActor private static var raising = Set<ObjectIdentifier>()
+
+    private func raiseLights(_ window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen),
+              let close = window.standardWindowButton(.closeButton),
+              let container = close.superview?.superview,
+              let content = window.contentView,
+              let frame = content.superview
+        else { return }
+        if container.superview !== frame || frame.subviews.last !== container {
+            frame.addSubview(container, positioned: .above, relativeTo: content)
+        }
+        container.wantsLayer = true
+        container.layer?.zPosition = 10
     }
 
     // MARK: - keys

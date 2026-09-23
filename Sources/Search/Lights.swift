@@ -38,6 +38,9 @@ final class Lights: NSObject {
     /// to 13, on top of each other, a spacing each later pass then copied
     /// from the one before. Reproduced with ./bench resize, 23 Sep 2026.
     private let spacing: CGFloat
+    /// AppKit's own title bar height and button places, from before the
+    /// first move, to give back in full screen.
+    private var native: (height: CGFloat, origins: [NSPoint])?
 
     private init(_ window: NSWindow, moved: @escaping () -> Void) {
         self.window = window
@@ -46,7 +49,17 @@ final class Lights: NSObject {
         let measured = row.count == 2 ? row[1].frame.minX - row[0].frame.minX : 0
         spacing = (16...32).contains(measured) ? measured : 20
         super.init()
+        let row3 = self.buttons
+        if row3.count == 3, let container = row3[0].superview?.superview {
+            native = (container.frame.height, row3.map(\.frame.origin))
+        }
         let centre = NotificationCenter.default
+        // Full screen shows the lights in its own title bar, slid down under
+        // the menu bar. Left at the strip's height and places, they came out
+        // at the foot of the screen instead, gone as the pointer went for them.
+        for name in [NSWindow.willEnterFullScreenNotification, NSWindow.didEnterFullScreenNotification] {
+            centre.addObserver(self, selector: #selector(giveBack), name: name, object: window)
+        }
         for name in [
             NSWindow.didResizeNotification, NSWindow.didEndLiveResizeNotification,
             NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
@@ -68,6 +81,24 @@ final class Lights: NSObject {
 
     private var buttons: [NSButton] {
         [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window?.standardWindowButton($0) }
+    }
+
+    /// The title bar as AppKit made it, for full screen.
+    @objc private func giveBack() {
+        let buttons = self.buttons
+        guard let native, buttons.count == 3, let bar = buttons[0].superview,
+              let container = bar.superview else { return }
+        placing = true
+        defer { placing = false }
+        var frame = container.frame
+        if frame.height != native.height {
+            frame.origin.y += frame.height - native.height
+            frame.size.height = native.height
+            container.frame = frame
+        }
+        for (button, origin) in zip(buttons, native.origins) where button.frame.origin != origin {
+            button.setFrameOrigin(origin)
+        }
     }
 
     @objc private func place() {
