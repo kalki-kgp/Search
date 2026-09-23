@@ -142,6 +142,11 @@ struct SearchApp: App {
                     .keyboardShortcut("b", modifiers: [.command, .shift])
                     .disabled(browser.active?.isBlank ?? true)
                 Button("Show Bookmarks…") { browser.bookmarking = true }
+                Toggle("Show Bookmarks Bar", isOn: Binding(
+                    get: { browser.prefs.bookmarkBar },
+                    set: { browser.prefs.bookmarkBar = $0 }
+                ))
+                .keyboardShortcut("b", modifiers: [.command, .option])
                 Divider()
                 BookmarkTree(nodes: browser.bookmarks.roots) { browser.visit($0) }
             }
@@ -268,6 +273,11 @@ struct ContentView: View {
                     // and it costs a compositing pass.
                     Color.clear.frame(height: band)
 
+                    if showsBar {
+                        BookmarkBar(browser: browser, bookmarks: browser.bookmarks)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+
                     // One stage, always.
                     if let tab = browser.active {
                         Page(tab: tab)
@@ -297,6 +307,7 @@ struct ContentView: View {
         }
         .ignoresSafeArea()
         .animation(Motion.glide, value: browser.prefs.sidebar)
+        .animation(Motion.quick, value: browser.prefs.bookmarkBar)
         .animation(.easeOut(duration: 0.12), value: browser.active?.immersed)
     }
 
@@ -565,6 +576,12 @@ struct ContentView: View {
     /// True while the tabs are down the left, and not folded away (see Fold.swift).
     private var sidebar: Bool {
         browser.prefs.sidebar && !browser.folded && browser.active?.immersed != true
+    }
+
+    /// The bookmarks bar, under the tabs — never over a page that has the
+    /// whole screen.
+    private var showsBar: Bool {
+        browser.prefs.bookmarkBar && browser.active?.immersed != true
     }
 
     /// The column has its own corner for the lights, so the page beside it

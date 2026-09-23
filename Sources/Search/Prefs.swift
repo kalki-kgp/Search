@@ -118,6 +118,12 @@ final class Preferences: ObservableObject {
         }
     }
 
+    /// The top level of the bookmarks in a row under the tabs. On unless
+    /// turned off.
+    @Published var bookmarkBar: Bool {
+        didSet { store.set(bookmarkBar, forKey: "bookmarks.bar") }
+    }
+
     /// Separate sets of tabs, each with its own sign-ins (see Spaces.swift).
     /// Off unless asked for.
     @Published var usesSpaces: Bool {
@@ -180,6 +186,7 @@ final class Preferences: ObservableObject {
         // Left behind by the Web Inspector's switch, from before it was
         // always there.
         store.removeObject(forKey: "inspector")
+        bookmarkBar = store.object(forKey: "bookmarks.bar") as? Bool ?? true
         let corrects = store.bool(forKey: "autocorrect")
         autocorrect = corrects
         // Before the first web view exists: WebKit reads these once.

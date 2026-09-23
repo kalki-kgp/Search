@@ -204,6 +204,10 @@ struct SettingsPanel: View {
                 Segmented(options: Look.allCases.map { ($0, $0.title) }, selection: $prefs.look)
             }
             Rule()
+            Line("Bookmarks bar", "Your bookmarks in a row under the tabs — ⌥⌘B shows or hides it") {
+                Switch(on: $prefs.bookmarkBar)
+            }
+            Rule()
             Line("Correct spelling as you type", "macOS's autocorrect inside pages — the one that capitalises for you") {
                 Switch(on: $prefs.autocorrect)
             }

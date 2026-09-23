@@ -88,6 +88,9 @@ enum Metrics {
     /// to breathe just leaves it sitting below three buttons it used to line
     /// up with.
     static let strip: CGFloat = 52
+    /// The bookmarks bar under it, when it is on.
+    static let bar: CGFloat = 30
+    static let barInset: CGFloat = 8
     /// Where the first tab starts. The traffic lights run from 19 to 79 —
     /// measured, not guessed — so this leaves them the same air on their right
     /// that the window gives them on their left.
