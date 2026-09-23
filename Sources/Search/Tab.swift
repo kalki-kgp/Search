@@ -395,7 +395,7 @@ final class Tab: ObservableObject, Identifiable {
     /// pointing mode, and this site's stylesheet of things you have hidden. The
     /// stylesheet goes in before the document has a body, so nothing is ever
     /// seen arriving and then leaving again.
-    func arm(hiding css: String) {
+    func arm(hiding css: String, for site: String? = nil) {
         veils = css
         guard let built else { return }
         let controller = built.configuration.userContentController
@@ -431,6 +431,11 @@ final class Tab: ObservableObject, Identifiable {
                     forMainFrameOnly: false
                 )
             )
+        }
+        // The blocker's scriptlets for where this document is going, if its
+        // lists have any for it (see Shield.swift).
+        for script in Shield.shared.scripts(for: site ?? address?.host()) {
+            controller.addUserScript(script)
         }
         guard !css.isEmpty else { return }
         controller.addUserScript(

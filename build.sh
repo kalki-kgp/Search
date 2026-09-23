@@ -53,6 +53,14 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$NAME"
 
+# The ad blocker's list compiler (Shield/compiler, Rust, Brave's engine) sits
+# beside the app's own binary; the scriptlet library and the procedural-filter
+# script go in Resources. See Sources/Search/Shield.swift.
+CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
+"$CARGO" build --release --quiet --manifest-path Shield/compiler/Cargo.toml
+cp Shield/compiler/target/release/shield-compiler "$APP/Contents/MacOS/shield-compiler"
+cp Shield/resources.json Shield/procedural.js "$APP/Contents/Resources/"
+
 # Symbols stay out of the app. The linker leaves every function's name and a
 # map back to the source in the binary — 15,000 entries, more than half of
 # what the app weighed (6.5 MB of binary, 2.7 without them), and nothing the

@@ -10,6 +10,15 @@ struct SearchApp: App {
     /// Links from other apps, and the Dock icon.
     @NSApplicationDelegateAdaptor(Links.self) private var links
 
+    init() {
+        // Started again by itself to compile the block lists (see
+        // Shield.swift): do that, and go, before any window exists.
+        let arguments = CommandLine.arguments
+        if let flag = arguments.firstIndex(of: "--compile-shield") {
+            Shield.compileAndExit(Array(arguments[(flag + 1)...]))
+        }
+    }
+
     var body: some Scene {
         Window("Search", id: "browser") {
             ContentView(browser: browser)

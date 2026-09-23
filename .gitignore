@@ -10,3 +10,4 @@ build/
 *.provisionprofile
 *.p12
 *.mobileprovision
+Shield/compiler/target/

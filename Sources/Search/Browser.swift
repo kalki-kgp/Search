@@ -695,6 +695,9 @@ final class Browser: NSObject, ObservableObject {
     override init() {
         super.init()
         Shield.shared.enabled = prefs.shielded
+        Shield.shared.reach { [weak self] in
+            self?.tabs.compactMap { $0.built?.configuration.userContentController } ?? []
+        }
         Shield.shared.compile()
         if #available(macOS 15.4, *) { Extensions.shared.start(for: self) }
         if prefs.bench { Bench.shared.start(for: self) }
@@ -1752,7 +1755,7 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         // decided here because here is the last moment before it loads.
         if action.targetFrame?.isMainFrame ?? true, let tab = tab(for: webView) {
             let host = curtain.host(of: url)
-            tab.arm(hiding: curtain.css(on: host))
+            tab.arm(hiding: curtain.css(on: host), for: url.host())
             // And the blocker, on or off for where it is going.
             Shield.shared.tune(webView.configuration.userContentController, for: host)
         }

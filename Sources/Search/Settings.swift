@@ -333,13 +333,21 @@ struct SettingsPanel: View {
     private var privacy: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
-                Line("Block ads and trackers", shield.trouble ?? "Third parties whose only job is to watch") {
+                Line("Block ads and trackers", shield.trouble ?? (shield.updating ? "Fetching Brave's lists…" : shield.status ?? "Brave's lists: EasyList, EasyPrivacy, uBlock Origin's and Brave's own")) {
                     Switch(on: $prefs.shielded)
+                }
+                if prefs.shielded, shield.trouble == nil {
+                    Rule()
+                    Line("Block lists", "Fetched from where Brave gets them, once a week") {
+                        Pill(shield.updating ? "Updating…" : "Update now") {
+                            Task { await shield.refresh() }
+                        }
+                    }
                 }
                 if let trouble = shield.trouble {
                     Rule()
                     Line(trouble, "Nothing is being blocked until this clears — try again, or restart Search") {
-                        Pill("Try again") { shield.compile() }
+                        Pill("Try again") { Task { await shield.refresh() } }
                     }
                 }
                 if let host = browser.hereHost, prefs.shielded, shield.trouble == nil {
