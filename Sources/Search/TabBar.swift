@@ -18,8 +18,8 @@ struct TabBar: View {
     @State private var plussed = false
     /// How wide the doors at the far end are, extension buttons included.
     @State private var doors: CGFloat = 0
-    /// Full screen hides the traffic lights, and the permissions button takes
-    /// their corner; otherwise it sits just after them.
+    /// Full screen hides the traffic lights, and the row moves into their
+    /// corner.
     @State private var fullScreen = Links.window?.styleMask.contains(.fullScreen) ?? false
 
     var body: some View {
@@ -32,19 +32,13 @@ struct TabBar: View {
             ZStack(alignment: .leading) {
                 // The empty half of the strip is what you grab to move the
                 // window; the tabs keep the run they sit on.
-                DragStrip(reserved: Metrics.lights + dot + run(in: geo.size.width) + Metrics.tabGap + Metrics.plusWidth, trailing: Metrics.helm + 26 + 24)
+                DragStrip(reserved: lead + dot + run(in: geo.size.width) + Metrics.tabGap + Metrics.plusWidth, trailing: Metrics.helm + 26 + 24)
                 // And the corner the lights sit in, which is title bar too —
                 // the one stretch left to take hold of when tabs fill the row.
                 DragStrip()
-                    .frame(width: Metrics.lights)
-                if fullScreen {
-                    CaptureCorner(browser: browser)
-                        .padding(.leading, 12)
-                        .frame(maxWidth: Metrics.lights, alignment: .leading)
-                }
-
+                    .frame(width: lead)
                 HStack(spacing: Metrics.tabGap) {
-                    if !fullScreen { CaptureCorner(browser: browser) }
+                    CaptureCorner(browser: browser)
                     // The space on screen, first, when there are spaces.
                     if browser.prefs.usesSpaces { SpaceDot(browser: browser) }
 
@@ -68,7 +62,7 @@ struct TabBar: View {
                                         tab: tab,
                                         live: tab.id == browser.activeID,
                                         width: width(in: geo.size.width),
-                                        room: geo.size.width - Metrics.lights - 12,
+                                        room: geo.size.width - lead - 12,
                                         pill: pill,
                                         close: { browser.close(tab) }
                                     )
@@ -144,7 +138,7 @@ struct TabBar: View {
                 // The traffic lights are the system's. The row starts after
                 // them and stays there — nothing here moves to get out of
                 // their way, because nothing here was ever in it.
-                .padding(.leading, Metrics.lights)
+                .padding(.leading, lead)
                 .padding(.trailing, 12)
                 .coordinateSpace(name: "strip")
             }
@@ -226,7 +220,7 @@ struct TabBar: View {
         var total = pinned * Metrics.pinWidth + loose * each
             + CGFloat(max(0, browser.tabs.count - 1)) * Metrics.tabGap
         if let id = browser.editingTab, let tab = browser.tabs.first(where: { $0.id == id }) {
-            total += min(340, strip - Metrics.lights - 12) - (tab.pin != nil ? Metrics.pinWidth : each)
+            total += min(340, strip - lead - 12) - (tab.pin != nil ? Metrics.pinWidth : each)
         }
         return total
     }
@@ -236,13 +230,18 @@ struct TabBar: View {
     /// the three of the helm and the bookmarks stand in for them.
     private func room(in strip: CGFloat) -> CGFloat {
         let far = doors > 0 ? doors : Metrics.helm + 26
-        return max(0, strip - Metrics.lights - dot - 12 - Metrics.plusWidth - far - 3 * Metrics.tabGap)
+        return max(0, strip - lead - dot - 12 - Metrics.plusWidth - far - 3 * Metrics.tabGap)
     }
 
-    /// What the space's dot takes before the tabs, when there are spaces.
+    /// Where the row starts: after the traffic lights, or in full screen,
+    /// where they are hidden, near the edge.
+    private var lead: CGFloat { fullScreen ? 12 : Metrics.lights }
+
+    /// What goes before the tabs: the permissions button, and the space's dot
+    /// when there are spaces.
     private var dot: CGFloat {
         return (browser.prefs.usesSpaces ? SpaceDot.width + Metrics.tabGap : 0)
-            + (fullScreen ? 0 : CaptureCorner.width + Metrics.tabGap)
+            + CaptureCorner.width + Metrics.tabGap
     }
 
     /// Every loose tab is the same width, so the cross is always in the same
