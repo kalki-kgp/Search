@@ -249,6 +249,7 @@ final class Tab: ObservableObject, Identifiable {
     private let images = ImageRelay()
     private let shop = StoreRelay()
     private let capture = CaptureRelay()
+    private let speed = Speed.Relay()
     private let ears = AudioWatch()
     private var lastY: Double = 0
 
@@ -354,7 +355,9 @@ final class Tab: ObservableObject, Identifiable {
         controller.removeScriptMessageHandler(forName: ImageRelay.name)
         controller.removeScriptMessageHandler(forName: StoreRelay.name)
         controller.removeScriptMessageHandler(forName: CaptureRelay.name)
+        controller.removeScriptMessageHandler(forName: Speed.name)
         controller.add(relay, name: ScrollRelay.name)
+        controller.add(speed, name: Speed.name)
         controller.add(capture, name: CaptureRelay.name)
         controller.add(veils_, name: VeilRelay.name)
         controller.add(images, name: ImageRelay.name)
@@ -479,6 +482,12 @@ final class Tab: ObservableObject, Identifiable {
         controller.addUserScript(
             WKUserScript(source: CaptureRelay.watch, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
+        // Every frame: videos are embedded more often than not.
+        if Speed.on {
+            controller.addUserScript(
+                WKUserScript(source: Speed.watch, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+            )
+        }
         if !FormRelay.passkeysOffered {
             controller.addUserScript(
                 WKUserScript(
@@ -947,6 +956,7 @@ final class Tab: ObservableObject, Identifiable {
         controller.removeScriptMessageHandler(forName: ImageRelay.name)
         controller.removeScriptMessageHandler(forName: StoreRelay.name)
         controller.removeScriptMessageHandler(forName: CaptureRelay.name)
+        controller.removeScriptMessageHandler(forName: Speed.name)
         controller.removeAllUserScripts()
         web.onPull = nil
         web.onTouch = nil

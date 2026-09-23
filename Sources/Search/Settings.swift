@@ -208,6 +208,10 @@ struct SettingsPanel: View {
                 Switch(on: $prefs.bookmarkBar)
             }
             Rule()
+            Line("Video speed", "S and D slower and faster, Z and X ten seconds back and on, R to 1.8×, G to 1×, V hides it") {
+                Switch(on: $prefs.speed)
+            }
+            Rule()
             Line("Correct spelling as you type", "macOS's autocorrect inside pages — the one that capitalises for you") {
                 Switch(on: $prefs.autocorrect)
             }

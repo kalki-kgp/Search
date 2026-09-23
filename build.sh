@@ -60,6 +60,8 @@ CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 "$CARGO" build --release --quiet --manifest-path Shield/compiler/Cargo.toml
 cp Shield/compiler/target/release/shield-compiler "$APP/Contents/MacOS/shield-compiler"
 cp Shield/resources.json Shield/procedural.js "$APP/Contents/Resources/"
+# Video Speed Controller's page script, built in (Speed/README.md).
+cp Speed/speed.js Speed/speed.css "$APP/Contents/Resources/"
 
 # Symbols stay out of the app. The linker leaves every function's name and a
 # map back to the source in the binary — 15,000 entries, more than half of

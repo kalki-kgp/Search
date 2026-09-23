@@ -123,6 +123,11 @@ final class Preferences: ObservableObject {
     @Published var bookmarkBar: Bool {
         didSet { store.set(bookmarkBar, forKey: "bookmarks.bar") }
     }
+    /// Video Speed Controller's controls on videos (Speed.swift); for pages
+    /// loaded from then on.
+    @Published var speed: Bool {
+        didSet { store.set(speed, forKey: "speed") }
+    }
 
     /// Separate sets of tabs, each with its own sign-ins (see Spaces.swift).
     /// Off unless asked for.
@@ -187,6 +192,7 @@ final class Preferences: ObservableObject {
         // always there.
         store.removeObject(forKey: "inspector")
         bookmarkBar = store.object(forKey: "bookmarks.bar") as? Bool ?? true
+        speed = store.object(forKey: "speed") as? Bool ?? true
         let corrects = store.bool(forKey: "autocorrect")
         autocorrect = corrects
         // Before the first web view exists: WebKit reads these once.
