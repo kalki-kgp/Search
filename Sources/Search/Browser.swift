@@ -480,7 +480,7 @@ final class Browser: NSObject, ObservableObject {
     private func answerCapture(_ decision: WKPermissionDecision) {
         guard let decide else { return }
         // Remembered per site, so a call you take every week asks once.
-        Store.settings.set(decision == .grant, forKey: "capture." + askedAbout)
+        Store.settings.set(decision == .grant, forKey: askedAbout)
         decide(decision)
         self.decide = nil
         askedAbout = ""
@@ -491,10 +491,10 @@ final class Browser: NSObject, ObservableObject {
     /// change your mind.
     func forgetCaptureChoices() {
         for key in Store.settings.dictionaryRepresentation().keys
-        where key.hasPrefix("capture.") {
+        where key.hasPrefix("capture.") || key.hasPrefix("location.") {
             Store.settings.removeObject(forKey: key)
         }
-        announce("Camera and microphone choices forgotten")
+        announce("Camera, microphone and location choices forgotten")
     }
 
     // MARK: - pinning
@@ -1854,8 +1854,50 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         }
 
         decide = decisionHandler
-        askedAbout = key
+        askedAbout = "capture." + key
         asking = CaptureAsk(host: host, wants: Browser.name(for: type))
+    }
+
+    /// The same, for where you are. WebKit asks this through its private half
+    /// of the UI delegate — there is no public one on the Mac — and without an
+    /// answer every page is simply told no. The answer is kept per site under
+    /// location.<host>, beside the camera's.
+    @objc(_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:)
+    func webView(
+        _ webView: WKWebView,
+        requestGeolocationPermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        let host = origin.host.isEmpty ? (tab(for: webView)?.address?.host() ?? "This page") : origin.host
+        let key = "location." + host
+        // Nothing to give a site while macOS gives Search nothing.
+        guard Store.settings.object(forKey: key) as? Bool != false else {
+            decisionHandler(.deny)
+            return
+        }
+        Whereabouts.shared.allowed { [weak self] allowed in
+            guard let self else { return decisionHandler(.deny) }
+            guard allowed else {
+                self.announce("Search is off in System Settings › Privacy & Security › Location Services")
+                return decisionHandler(.deny)
+            }
+            self.askLocation(host: host, key: key, decisionHandler)
+        }
+    }
+
+    private func askLocation(host: String, key: String, _ decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        if let remembered = Store.settings.object(forKey: key) as? Bool {
+            decisionHandler(remembered ? .grant : .deny)
+            return
+        }
+        guard decide == nil else {
+            decisionHandler(.deny)
+            return
+        }
+        decide = decisionHandler
+        askedAbout = key
+        asking = CaptureAsk(host: host, wants: "location")
     }
 
     private static func name(for type: WKMediaCaptureType) -> String {

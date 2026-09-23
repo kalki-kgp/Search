@@ -340,6 +340,7 @@ final class Tab: ObservableObject, Identifiable {
         Web.pages.add(web)
         Web.inspector(web.configuration.preferences)
         Web.mockCapture(web.configuration.preferences)
+        Whereabouts.shared.provide(for: web.configuration.processPool)
         web.navigationDelegate = delegate
         web.uiDelegate = delegate
 

@@ -483,7 +483,7 @@ struct ContentView: View {
     /// with the answer remembered so it is asked once and not every call.
     private func captureAsking(_ ask: Browser.CaptureAsk) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: ask.wants == "microphone" ? "mic" : "video")
+            Image(systemName: ask.wants == "microphone" ? "mic" : ask.wants == "location" ? "location" : "video")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Palette.muted)
             Text("\(ask.host) wants to use your \(ask.wants)")

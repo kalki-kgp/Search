@@ -363,7 +363,7 @@ struct SettingsPanel: View {
                     }
                 }
                 Rule()
-                Line("Camera and microphone", "What each site was allowed or refused") {
+                Line("Camera, microphone and location", "What each site was allowed or refused") {
                     Pill("Forget choices") { browser.forgetCaptureChoices() }
                 }
             }
