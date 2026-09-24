@@ -20,7 +20,14 @@ struct TabBar: View {
     @State private var doors: CGFloat = 0
     /// Full screen hides the traffic lights, and the row moves into their
     /// corner.
-    @State private var fullScreen = Links.window?.styleMask.contains(.fullScreen) ?? false
+    @State private var fullScreen = false
+    /// The window this row is in: every window posts the full-screen
+    /// notifications, and the state is read from this one alone.
+    @State private var home = Home()
+
+    private final class Home {
+        weak var window: NSWindow?
+    }
 
     var body: some View {
         // A GeometryReader is only here to measure the width. Its content is
@@ -146,9 +153,12 @@ struct TabBar: View {
         }
         .frame(height: Metrics.strip)
         .onHover { nearby = $0 }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in fullScreen = true }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in fullScreen = false }
-        .onAppear { fullScreen = Links.window?.styleMask.contains(.fullScreen) ?? false }
+        .background(WindowSetup { home.window = $0; settle() })
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in settle() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in settle() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
+            if note.object as? NSWindow === home.window { settle() }
+        }
         // A link dragged onto the row opens there.
         .onDrop(of: [.url, .text], isTargeted: $landing) { providers in
             browser.take(providers)
@@ -236,6 +246,11 @@ struct TabBar: View {
     /// Where the row starts: after the traffic lights, or in full screen,
     /// where they are hidden, near the edge.
     private var lead: CGFloat { fullScreen ? 12 : Metrics.lights }
+
+    private func settle() {
+        let now = home.window?.styleMask.contains(.fullScreen) ?? false
+        if now != fullScreen { fullScreen = now }
+    }
 
     /// What goes before the tabs: the permissions button, and the space's dot
     /// when there are spaces.
