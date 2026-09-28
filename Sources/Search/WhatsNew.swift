@@ -34,19 +34,11 @@ enum WhatsNew {
     static let toggles: [Toggle] = [
         Toggle(title: "Split View", detail: "Two tabs side by side: drag a tab to the edge of a page, or press ⌥⌘N.",
                since: "1.0.5", get: { $0.splitView }, set: { $0.splitView = $1 }),
-        Toggle(title: "Search a site from the address field", detail: "The start of a site's name, then Tab: red, Tab, and your words search Reddit.",
-               since: "1.0.5", get: { $0.searchesSites }, set: { $0.searchesSites = $1 }),
         Toggle(title: "Start with a fresh window", detail: "Your pinned tabs, and none of last time's others.",
                since: "1.0.5", get: { $0.startsFresh }, set: { $0.startsFresh = $1 }),
 
         Toggle(title: "Tab groups", detail: "Named sections of tabs. Right-click a tab to start one.",
                since: "1.0.4", get: { $0.usesTabGroups }, set: { $0.usesTabGroups = $1 }),
-        Toggle(title: "Sidebar on the right", detail: "The tabs down the right edge of the window.",
-               since: "1.0.4", get: { $0.sidebar && $0.sidePosition == .right },
-               set: { prefs, on in
-                   if on { prefs.sidebar = true }
-                   prefs.sidePosition = on ? .right : .left
-               }),
         Toggle(title: "Videos wait for a click", detail: "Videos don't start by themselves, even without sound.",
                since: "1.0.4", get: { $0.waitsForPlay }, set: { $0.waitsForPlay = $1 }),
         Toggle(title: "Always show the downloads button", detail: "Your downloads one click away, beside the other buttons.",

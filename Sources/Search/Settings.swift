@@ -12,7 +12,6 @@ struct SettingsPanel: View {
     @ObservedObject private var shield = Shield.shared
     @State private var isDefault = Links.isDefault
     /// A site shortcut being written, kept out of Preferences until it's saved.
-    @State private var draft: Keyword?
     @State private var page: Page = Page(rawValue: Store.settings.string(forKey: "settings.page") ?? "") ?? .general
 
     enum Page: String, CaseIterable, Identifiable {
@@ -215,68 +214,6 @@ struct SettingsPanel: View {
                 .padding(.bottom, 11)
             }
             Rule()
-            Line("Site shortcuts", keywordDetail) {
-                if draft == nil {
-                    Pill("Add") { draft = Keyword() }
-                } else {
-                    HStack(spacing: 6) {
-                        Pill("Cancel") { draft = nil }
-                        Pill("Save", filled: true) { saveDraft() }
-                            .disabled(draftProblem != nil)
-                            .opacity(draftProblem == nil ? 1 : 0.4)
-                    }
-                }
-            }
-            if let current = draft {
-                HStack(spacing: 8) {
-                    TextField("yt", text: Binding(
-                        get: { current.keyword },
-                        set: { draft?.keyword = $0 }
-                    ))
-                    .textFieldStyle(.plain)
-                    .frame(width: 50)
-                    Text("→").foregroundStyle(Palette.muted)
-                    TextField("https://www.youtube.com/results?search_query=%s", text: Binding(
-                        get: { current.template },
-                        set: { draft?.template = $0 }
-                    ))
-                    .textFieldStyle(.plain)
-                    .onSubmit(saveDraft)
-                }
-                .font(.system(size: 12.5))
-                .foregroundStyle(Palette.ink)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .padding(.horizontal, 14)
-                .padding(.bottom, 6)
-            }
-            ForEach(prefs.keywords) { entry in
-                HStack(spacing: 8) {
-                    Text(entry.keyword)
-                        .frame(width: 50, alignment: .leading)
-                    Text("→").foregroundStyle(Palette.muted)
-                    Text(entry.template)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button {
-                        prefs.keywords.removeAll { $0.id == entry.id }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(Palette.faint)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .font(.system(size: 12.5))
-                .foregroundStyle(Palette.ink)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .padding(.horizontal, 14)
-                .padding(.bottom, 6)
-            }
-            Rule()
             Line("Appearance", "Light, dark, or whatever the Mac is doing — pages follow it too") {
                 Segmented(options: Look.allCases.map { ($0, $0.title) }, selection: $prefs.look)
             }
@@ -300,10 +237,6 @@ struct SettingsPanel: View {
             Rule()
             Line("Open links from other apps in a small window", "To read and close, or keep with Open in Search (⌘O)") {
                 Switch(on: $prefs.littleLinks)
-            }
-            Rule()
-            Line("Address bar commands", "A word like \"settings\" or \"new tab\", typed alone in the address field, goes there instead of searching for it") {
-                Switch(on: $prefs.commandBar)
             }
             Rule()
             Line("Show where links go", "Point at a link and its address shows at the bottom of the page") {
@@ -344,32 +277,6 @@ struct SettingsPanel: View {
         }
     }
 
-    /// Checked when it's saved, not as it's typed into the list: a shortcut
-    /// only exists once its address is one it's safe to send words to.
-    private var draftProblem: String? {
-        guard let draft else { return nil }
-        return Keyword.problem(word: draft.keyword, template: draft.template, among: prefs.keywords)
-    }
-
-    private var keywordDetail: String {
-        guard let draft else {
-            return "A word before your search goes straight to that site, whatever engine you've picked — \"yt cats\" to YouTube"
-        }
-        if draft.keyword.isEmpty, draft.template.isEmpty {
-            return "A word, then the site's search address with %s where the words go"
-        }
-        return draftProblem ?? "\(draft.keyword.trimmingCharacters(in: .whitespacesAndNewlines)) will search \(draft.name)"
-    }
-
-    private func saveDraft() {
-        guard let current = draft, draftProblem == nil else { return }
-        prefs.keywords.append(Keyword(
-            keyword: current.keyword.trimmingCharacters(in: .whitespacesAndNewlines),
-            template: current.template.trimmingCharacters(in: .whitespacesAndNewlines)
-        ))
-        draft = nil
-    }
-
     private var searchDetail: String {
         guard prefs.engine == .custom else { return "Where words that aren't an address go" }
         guard Engine.accepts(prefs.customEngine) else {
@@ -401,10 +308,6 @@ struct SettingsPanel: View {
             }
             if prefs.sidebar {
                 Rule()
-                Line("Sidebar position", "Tabs down the \(prefs.sidePosition.rawValue) edge of the window") {
-                    Segmented(options: SidebarPosition.allCases.map { ($0, $0.title) }, selection: $prefs.sidePosition)
-                }
-                Rule()
                 Line("Hide the sidebar until the pointer reaches the edge", "The page takes the whole window; push against its \(prefs.sidePosition.rawValue) edge for the tabs. ⌘S keeps them out.") {
                     Switch(on: $prefs.sideHides)
                 }
@@ -430,10 +333,6 @@ struct SettingsPanel: View {
                 Switch(on: $prefs.lazyTabs)
             }
             Rule()
-            Line("Search a site from the address field", "Type the start of a site's name, like red or yout, then Tab, and what you type next searches that site. Sites you visit that offer a search join the list.") {
-                Switch(on: $prefs.searchesSites)
-            }
-            Rule()
             Line("Start with a fresh window", "Each time Search opens, your pinned tabs are there and last time's other tabs aren't.") {
                 Switch(on: $prefs.startsFresh)
             }
@@ -442,14 +341,8 @@ struct SettingsPanel: View {
                 Switch(on: $prefs.usesSpaces)
             }
             Rule()
-            Line("Tab groups", "Named sections in the sidebar. Right-click a tab to start a group; click its heading to hide or show its tabs.") {
+            Line("Tab groups", "Named sections of tabs. Right-click a tab to start a group; click its heading to hide or show its tabs.") {
                 Switch(on: $prefs.usesTabGroups)
-            }
-            if prefs.sidebar {
-                Rule()
-                Line("Pinned rows", "As in Arc: pins as squares for the sites you live in, pins as rows under them for pages you keep, and a line over the rest with Clear. Right-click a tab to pin it as a row.") {
-                    Switch(on: $prefs.listsPins)
-                }
             }
             Rule()
             Line("Split View", "Show two tabs side by side. Drag a tab onto a page to pair them.") {
