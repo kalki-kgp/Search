@@ -66,6 +66,25 @@ struct ExtensionsPage: View {
                     .padding(14)
                 }
 
+                Card {
+                    Line("From another browser", "What Chrome, Arc, Brave and the others added from the Chrome Web Store — installed fresh from the store, you say yes to each one") {
+                        Pill("Bring them over…") {
+                            browser.tuning = false
+                            browser.bringingExtensions = true
+                            browser.bringingIn = ""
+                        }
+                    }
+                }
+
+                Card {
+                    Line("Allow on private tabs", "Off by default - a private tab keeps nothing, extensions included") {
+                        Switch(on: Binding(
+                            get: { browser.prefs.extensionsInPrivate },
+                            set: { browser.prefs.extensionsInPrivate = $0 }
+                        ))
+                    }
+                }
+
                 if extensions.installed.isEmpty {
                     Card { Nothing("No extensions yet.") }
                 } else {
@@ -76,6 +95,8 @@ struct ExtensionsPage: View {
                         }
                     }
                 }
+
+                Recorders()
 
                 Card {
                     Line("Load an unpacked extension", "A folder with a manifest.json — your own, or one exported from another browser. Reload picks up what you've changed in it since.") {
@@ -89,6 +110,28 @@ struct ExtensionsPage: View {
             guard Crx.id(in: link) != nil else { return }
             extensions.install(from: link)
             link = ""
+        }
+    }
+
+    /// The extensions you let record your screen, each one to take back.
+    @available(macOS 15.4, *)
+    private struct Recorders: View {
+        @ObservedObject private var capture = ExtensionCapture.shared
+
+        var body: some View {
+            let ids = ExtensionCapture.allowedIDs
+            if !ids.isEmpty {
+                Card {
+                    VStack(spacing: 0) {
+                        ForEach(Array(ids.enumerated()), id: \.element) { index, id in
+                            if index > 0 { Rule() }
+                            Line(Browser.extensionName(id), "Can record your screen — macOS asks what to share each time") {
+                                Pill("Remove") { ExtensionCapture.forget(id) }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -122,6 +165,9 @@ struct ExtensionsPage: View {
                 }
                 Spacer(minLength: 8)
                 if hovering {
+                    Quick(item.pinned == true ? "Unpin" : "Pin to Toolbar") {
+                        extensions.setPinned(item.id, !(item.pinned ?? false))
+                    }
                     if context?.overrideNewTabPageURL != nil {
                         let on = Store.settings.object(forKey: "extensions.newtab.\(item.id)") as? Bool == true
                         Quick(on ? "Stop in New Tabs" : "Show in New Tabs") {
@@ -182,7 +228,7 @@ struct StoreOffer: View {
         var body: some View {
             // Only where the page's own "Add to Search" isn't in place — a
             // store that has changed its markup still gets a way in.
-            if let url = tab.address, StoreOffer.isStorePage(url), let id = Crx.id(in: url.absoluteString),
+            if let url = tab.address, let id = Crx.storeID(of: url),
                tab.storePlaced != id, !extensions.installed.contains(where: { $0.id == id }) {
                 HStack(spacing: 12) {
                     Image(systemName: "puzzlepiece.extension")
@@ -215,6 +261,7 @@ struct StoreOffer: View {
     }
 
     static func isStorePage(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil else { return false }
         let host = url.host()?.lowercased() ?? ""
         return host == "chromewebstore.google.com"
             || (host == "chrome.google.com" && url.path.hasPrefix("/webstore"))

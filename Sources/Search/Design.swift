@@ -17,7 +17,14 @@ enum Palette {
     static let faint = Color(nsColor: NS.faint)         // neutral-300 · neutral-700
     static let hairline = Color(nsColor: NS.hairline)   // neutral-200 · neutral-800
     static let wash = Color(nsColor: NS.wash)           // the live tab
+    /// The live pin: among squares that already wear a faint grey, the one
+    /// you are on stands out from them as a live row does from the white.
+    static let pinLive = Color(nsColor: NS.pinLive)
     static let hover = Color(nsColor: NS.hover)         // the one under the pointer
+    /// The only two that aren't grey: a connection nobody can read on the
+    /// way, and one anybody can (see SiteCard.swift).
+    static let safe = Color(nsColor: NS.safe)           // green-700 · green-400
+    static let unsafe = Color(nsColor: NS.unsafe)       // amber-700 · amber-400
 
     /// The same colours for the AppKit corners of the app — a text field's
     /// ink, a window's background — which want an NSColor and keep it.
@@ -28,9 +35,19 @@ enum Palette {
         static let faint = pair(0.83, 0.32)
         static let hairline = pair(0.91, 0.20)
         static let wash = pair(0.937, 0.175)
+        static let pinLive = pair(0.90, 0.21)
         static let hover = pair(0.965, 0.15)
         /// The resting traffic lights, drawn by hand when the app is behind.
         static let resting = pair(0.80, 0.30)
+        static let safe = tint(light: (0.08, 0.50, 0.24), dark: (0.29, 0.87, 0.50))
+        static let unsafe = tint(light: (0.71, 0.33, 0.04), dark: (0.98, 0.75, 0.14))
+
+        private static func tint(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> NSColor {
+            NSColor(name: nil) { appearance in
+                let c = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+                return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+            }
+        }
 
         private static func pair(_ light: CGFloat, _ dark: CGFloat) -> NSColor {
             NSColor(name: nil) { appearance in
@@ -135,10 +152,26 @@ enum Metrics {
 // One spring for anything that moves between two places, one for anything that
 // arrives or leaves. Using the same two everywhere is most of why a thing feels
 // like a single piece of software rather than a pile of views.
+// When macOS Reduce Motion is on in System Settings, transitions become
+// immediate so the interface does not jump or slide.
 enum Motion {
-    static let glide = Animation.spring(response: 0.34, dampingFraction: 0.82)
-    static let settle = Animation.spring(response: 0.30, dampingFraction: 0.86)
-    static let quick = Animation.easeOut(duration: 0.14)
+    /// Whether interface transitions should be immediate, following the
+    /// Mac's own accessibility setting.
+    static var reduced: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    static var glide: Animation? {
+        reduced ? nil : .spring(response: 0.34, dampingFraction: 0.82)
+    }
+
+    static var settle: Animation? {
+        reduced ? nil : .spring(response: 0.30, dampingFraction: 0.86)
+    }
+
+    static var quick: Animation? {
+        reduced ? nil : .easeOut(duration: 0.14)
+    }
 }
 
 /// Search's mark — Drice's Subtract.svg, a pill with an S cut out of it,
@@ -229,6 +262,7 @@ struct Shake: GeometryEffect {
     }
 
     func effectValue(size: CGSize) -> ProjectionTransform {
+        guard !Motion.reduced else { return ProjectionTransform(.identity) }
         // Three there-and-backs, tapering to nothing, so it settles rather than
         // stopping mid-swing.
         let decay = 1 - travel

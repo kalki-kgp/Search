@@ -283,9 +283,9 @@ enum CaptureMenu {
                 })
             }
         }
-        if let host = browser.active?.address?.host(), !host.isEmpty {
+        if let url = browser.active?.address, let scheme = url.scheme, let host = url.host(), !host.isEmpty {
             menu.addItem(.separator())
-            site(host, into: menu)
+            site(host, origin: Browser.origin(scheme, host, url.port ?? 0), into: menu)
         }
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         actions = []
@@ -298,16 +298,15 @@ enum CaptureMenu {
     }
 
     /// What the site in front has been allowed or refused, each one open to
-    /// change: the choice is kept under capture.<host>|<WKMediaCaptureType>
-    /// and location.<host>, the same keys the question at the top of the
-    /// page writes.
-    private static func site(_ host: String, into menu: NSMenu) {
+    /// change: the choice is kept under capture.<origin>|<kind>, the same
+    /// keys the question at the top of the page writes (see Browser).
+    private static func site(_ host: String, origin: String, into menu: NSMenu) {
         menu.addItem(heading(host))
         let kinds: [(String, String, String)] = [
-            ("capture.\(host)|\(WKMediaCaptureType.camera.rawValue)", "Camera", "video"),
-            ("capture.\(host)|\(WKMediaCaptureType.microphone.rawValue)", "Microphone", "mic"),
-            ("capture.\(host)|\(WKMediaCaptureType.cameraAndMicrophone.rawValue)", "Camera and Microphone", "video.badge.waveform"),
-            ("location.\(host)", "Location", "location"),
+            ("capture.\(origin)|\(WKMediaCaptureType.camera.rawValue)", "Camera", "video"),
+            ("capture.\(origin)|\(WKMediaCaptureType.microphone.rawValue)", "Microphone", "mic"),
+            ("capture.\(origin)|\(WKMediaCaptureType.cameraAndMicrophone.rawValue)", "Camera and Microphone", "video.badge.waveform"),
+            ("capture.\(origin)|location", "Location", "location"),
         ]
         for (key, name, symbol) in kinds {
             // The pair is only asked for together; it gets a row once it has been.
