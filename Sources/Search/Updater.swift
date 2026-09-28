@@ -326,19 +326,6 @@ final class Updater: ObservableObject {
             minimumSystemVersion: json["minimumSystemVersion"] as? String
         )
         release.dmgSha256 = dmgSha.flatMap { $0.isEmpty ? nil : $0 }
-        // The AI add-on's engine for this Mac, when the feed offers one: as
-        // signed as the release itself (see AIEngine).
-        if let engine = (json["ai"] as? [String: Any])?["engine"] as? [String: Any],
-           let version = (engine["version"] as? Int) ?? Int(engine["version"] as? String ?? ""),
-           let url = link(engine["url"]), url.scheme?.lowercased() == "https",
-           let sha = (engine["sha256"] as? String)?.lowercased(), sha.count == 64,
-           let size = (engine["size"] as? NSNumber)?.int64Value, size > 0, size < 64 << 20 {
-            let offer = AIEngine.Offer(version: version, url: url, sha256: sha, size: size)
-            await MainActor.run {
-                AIEngine.shared.offered = offer
-                AIEngine.shared.refreshState()
-            }
-        }
         return release
     }
 

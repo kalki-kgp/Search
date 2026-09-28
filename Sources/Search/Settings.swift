@@ -9,7 +9,6 @@ struct SettingsPanel: View {
     @ObservedObject var browser: Browser
     @ObservedObject var prefs: Preferences
 
-    @ObservedObject private var updater = Updater.shared
     @ObservedObject private var shield = Shield.shared
     @State private var isDefault = Links.isDefault
     /// A site shortcut being written, kept out of Preferences until it's saved.
@@ -17,7 +16,7 @@ struct SettingsPanel: View {
     @State private var page: Page = Page(rawValue: Store.settings.string(forKey: "settings.page") ?? "") ?? .general
 
     enum Page: String, CaseIterable, Identifiable {
-        case general, tabs, shortcuts, extensions, passwords, downloads, privacy, ai, about
+        case general, tabs, shortcuts, extensions, passwords, downloads, privacy, about
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -28,7 +27,6 @@ struct SettingsPanel: View {
             case .passwords: return "Passwords"
             case .downloads: return "Downloads"
             case .privacy: return "Privacy"
-            case .ai: return "AI"
             case .about: return "About"
             }
         }
@@ -41,7 +39,6 @@ struct SettingsPanel: View {
             case .passwords: return "key"
             case .downloads: return "arrow.down.circle"
             case .privacy: return "hand.raised"
-            case .ai: return "sparkles"
             case .about: return "info.circle"
             }
         }
@@ -146,7 +143,6 @@ struct SettingsPanel: View {
                     case .passwords: passwords
                     case .downloads: downloads
                     case .privacy: privacy
-                    case .ai: AISettings(browser: browser, prefs: prefs)
                     case .about: about
                     }
                 }
@@ -624,12 +620,6 @@ struct SettingsPanel: View {
             .padding(.bottom, 2)
 
             Card {
-                Line(versionTitle, versionDetail) { versionControl }
-                Rule()
-                Line("Install updates on its own", "Off, Search still looks every hour and tells you, and installs only when you press Install") {
-                    Switch(on: $prefs.installsUpdates)
-                }
-                Rule()
                 Line("Found something wrong?", "Opens a draft with the version already in it") {
                     Pill("Send Feedback") { Links.writeFeedback() }
                 }
@@ -664,55 +654,6 @@ struct SettingsPanel: View {
                 Rule()
                 Shortcut("⇧⌘⌫", "Clear browsing data")
             }
-        }
-    }
-
-    /// The version line follows the newer build from found to fetched to
-    /// in place; with none, it is simply this one.
-    private var versionTitle: String {
-        switch updater.stage {
-        case .none: return "Updates"
-        case .fetching(let next): return "Search \(next.version) is downloading…"
-        case .ready(let next): return "Search \(next.version) is ready"
-        case .offered(let next), .waiting(let next): return "Search \(next.version) is out"
-        }
-    }
-
-    private var versionDetail: String {
-        switch updater.stage {
-        case .none:
-            return updater.lastChecked.map { "Checked \($0.formatted(.relative(presentation: .named))) — every hour on its own" }
-                ?? "Checked every hour on its own"
-        case .fetching(let next):
-            return next.notes ?? "Quietly, in the background — nothing you have set is touched"
-        case .ready(let next):
-            return next.notes ?? "It's there the next time you open Search"
-        case .offered(let next):
-            return next.notes ?? "Open the disk image, the same as the first time"
-        case .waiting(let next):
-            return next.notes ?? "Checked and put in place when you press Install"
-        }
-    }
-
-    @ViewBuilder
-    private var versionControl: some View {
-        switch updater.stage {
-        case .none:
-            Pill(updater.checking ? "Checking…" : "Check now") {
-                updater.check { found in
-                    if found == nil { browser.announce("This is the latest one") }
-                }
-            }
-            .disabled(updater.checking)
-        case .fetching:
-            Ring(size: 12)
-        case .ready:
-            Pill("Relaunch now", filled: true) { updater.relaunch() }
-        case .offered:
-            Pill(updater.fetchingDisk ? "Downloading…" : "Download", filled: true) { updater.openDisk() }
-                .disabled(updater.fetchingDisk)
-        case .waiting:
-            Pill("Install", filled: true) { updater.install() }
         }
     }
 
