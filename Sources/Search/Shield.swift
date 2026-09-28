@@ -238,6 +238,26 @@ final class Shield: ObservableObject {
       if (window.__searchWall) return;
       window.__searchWall = true;
       var tags = ['channel', 'lactmilli', 'instream', 'yahi'], at = -1, base = null, tries = 0, timer = 0;
+      var root = document.documentElement, saved = null;
+      try { saved = localStorage.getItem('search.wall'); } catch (e) {}
+      // The tag that worked last time goes first.
+      if (tags.indexOf(saved) > 0) tags = [saved].concat(tags.filter(function (t) { return t !== saved; }));
+      // The wall is never drawn while this works on it; only YouTube's
+      // ad-block message is hidden, other errors still show. If every tag
+      // fails, search-wall on <html> lets the message through.
+      var css = document.createElement('style');
+      css.textContent =
+        'html:not([search-wall]) yt-playability-error-supported-renderers:has(ytd-enforcement-message-view-model){display:none!important}' +
+        'html:not([search-wall]) ytd-watch-flexy[player-unavailable]:has(ytd-enforcement-message-view-model) :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}';
+      root.appendChild(css);
+      function tag(c, i) {
+        if (base === null) base = c.userAgent;
+        at = i;
+        c.userAgent = base.replace(/Mozilla\\/5\\.0 \\([^)]+/, function (m) { return m + '; ' + tags[i]; });
+      }
+      function client() {
+        return window.ytcfg && ytcfg.data_ && ytcfg.data_.INNERTUBE_CONTEXT && ytcfg.data_.INNERTUBE_CONTEXT.client;
+      }
       function walled(r) {
         var s = r && r.playabilityStatus;
         return !!(s && s.status !== 'OK' && s.errorScreen && s.errorScreen.enforcementMessageViewModel);
@@ -254,17 +274,17 @@ final class Shield: ObservableObject {
         var r = p && p.getPlayerResponse && p.getPlayerResponse();
         if (!r) { if (++tries < 8) timer = setTimeout(check, 500); return; }
         if (!walled(r)) {
-          if (r.playabilityStatus && r.playabilityStatus.status === 'OK' && at >= 0) clear();
+          if (r.playabilityStatus && r.playabilityStatus.status === 'OK' && at >= 0) {
+            clear();
+            try { localStorage.setItem('search.wall', tags[at]); } catch (e) {}
+          }
           return;
         }
-        var c = window.ytcfg && ytcfg.data_ && ytcfg.data_.INNERTUBE_CONTEXT && ytcfg.data_.INNERTUBE_CONTEXT.client;
-        if (!c || !c.userAgent || at + 1 >= tags.length) return;
-        if (base === null) base = c.userAgent;
-        at += 1;
-        c.userAgent = base.replace(/Mozilla\\/5\\.0 \\([^)]+/, function (m) { return m + '; ' + tags[at]; });
+        var c = client();
         var id = (r.videoDetails && r.videoDetails.videoId) || new URLSearchParams(location.search).get('v');
         var start = (r.playerConfig && r.playerConfig.playbackStartConfig && r.playerConfig.playbackStartConfig.startSeconds) || 0;
-        if (!id) return;
+        if (!c || !c.userAgent || !id || at + 1 >= tags.length) { root.setAttribute('search-wall', ''); return; }
+        tag(c, at + 1);
         p.loadVideoById(id, start);
         tries = 0;
         timer = setTimeout(check, 1500);
@@ -272,10 +292,17 @@ final class Shield: ObservableObject {
       function soon() {
         var e = document.querySelector('yt-playability-error-supported-renderers');
         if (e) e.hidden = false;
+        root.removeAttribute('search-wall');
         tries = 0;
         clearTimeout(timer);
         timer = setTimeout(check, 400);
       }
+      // Before the next video is asked for: ask with the tag that worked,
+      // so the answer never has the wall in it.
+      window.addEventListener('yt-navigate-start', function () {
+        var c = client();
+        if (c && c.userAgent && at < 0 && saved) tag(c, 0);
+      });
       window.addEventListener('yt-navigate-finish', soon);
       window.addEventListener('yt-page-data-updated', soon);
     })();

@@ -204,7 +204,9 @@ struct TabBar: View {
                 .padding(.leading, lights)
                 .padding(.trailing, 12)
                 .coordinateSpace(name: "strip")
-                .onPreferenceChange(HoverFrame.self) { peekFrame = $0 }
+                // The pointer leaving reports no frame; the card is still
+                // fading out then, so it keeps the last place it had.
+                .onPreferenceChange(HoverFrame.self) { if $0 != .zero { peekFrame = $0 } }
                 // Below the tab, over the page; never in the way of a click.
                 .overlay(alignment: .topLeading) {
                     if let peek, let tab = browser.tabs.first(where: { $0.id == peek.id }) {
@@ -445,11 +447,9 @@ struct TabBar: View {
     private func width(in strip: CGFloat) -> CGFloat {
         if circled(in: strip) { return Metrics.tabCircle }
         let displayed = browser.displayedTabs
-        let ungrouped = displayed.filter { $0.pin == nil && browser.group(of: $0) == nil }
-        let grouped = browser.prefs.usesTabGroups ? browser.tabGroups.flatMap { browser.visibleTabs(in: $0) } : []
-        let items = browser.prefs.usesTabGroups ? ungrouped + grouped : displayed
         let pins = displayed.filter { $0.pin != nil }.count
-        if browser.prefs.usesTabGroups {
+        if grouped {
+            let items = drawnLoose
             let count = items.count
             guard count > 0 else { return Metrics.tabWidth }
             let extra = pairWidthExtra(in: items, base: Metrics.tabMinWidth, splits: browser.splits)
@@ -472,19 +472,31 @@ struct TabBar: View {
         return max(Metrics.tabMinWidth, min(Metrics.tabWidth, (room(in: strip) - spent) / loose))
     }
 
+    /// Groups change the row only once there is one; the switch in
+    /// Settings alone leaves it plain.
+    private var grouped: Bool { browser.prefs.usesTabGroups && !browser.tabGroups.isEmpty }
+
+    /// The loose tabs the row draws: a folded group's tabs aren't among them.
+    private var drawnLoose: [Tab] {
+        let displayed = browser.displayedTabs
+        guard grouped else { return displayed.filter { $0.pin == nil } }
+        return displayed.filter { $0.pin == nil && browser.group(of: $0) == nil }
+            + browser.tabGroups.flatMap { browser.visibleTabs(in: $0) }
+    }
+
     /// The hovered tab's width and everyone else's. The loose tabs keep the
     /// length they had between them, so nothing past the run moves and the
     /// pointer stays inside the tab it grew: every tab before it gives up
     /// less than the tab gains.
     ///
-    /// Only in the plain row: groups and Split View lay their tabs out by
-    /// rules of their own.
+    /// Not while a split is in the row: a pair is laid out by rules of its
+    /// own. Groups are fine — only the tabs they show are counted.
     private func growth(in strip: CGFloat, each base: CGFloat) -> (grown: CGFloat, others: CGFloat)? {
         guard let id = hovered, !home.lifted, browser.editingTab == nil,
-              !browser.prefs.usesTabGroups, !browser.prefs.splitView,
+              !(browser.prefs.splitView && !browser.splits.isEmpty),
               let tab = browser.displayedTabs.first(where: { $0.id == id }), tab.pin == nil
         else { return nil }
-        let loose = CGFloat(browser.displayedTabs.filter { $0.pin == nil }.count)
+        let loose = CGFloat(drawnLoose.count)
         guard base < Metrics.tabWidth - 0.5, loose > 1 else { return nil }
         let length = loose * base
         // Titled tabs keep a title's worth; marks and circles can go smaller.
@@ -545,7 +557,7 @@ struct TabBar: View {
     /// True when there are too many tabs for even their narrowest titled
     /// form — they become circles instead of scrolling.
     private func circled(in strip: CGFloat) -> Bool {
-        guard !browser.prefs.usesTabGroups, !browser.prefs.splitView else { return false }
+        guard !grouped, !(browser.prefs.splitView && !browser.splits.isEmpty) else { return false }
         let displayed = browser.displayedTabs
         let pinned = CGFloat(displayed.filter { $0.pin != nil }.count)
         let loose = CGFloat(displayed.count) - pinned
