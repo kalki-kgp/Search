@@ -342,7 +342,7 @@ struct SettingsPanel: View {
                 }
                 if prefs.shielded, shield.trouble == nil {
                     Rule()
-                    Line("Block lists", "Fetched from where Brave gets them, once a week") {
+                    Line("Block lists", "Fetched from where Brave gets them, once a day") {
                         Pill(shield.updating ? "Updating…" : "Update now") {
                             Task { await shield.refresh() }
                         }

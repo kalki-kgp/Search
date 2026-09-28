@@ -24,9 +24,14 @@ struct TabBar: View {
     /// The window this row is in: every window posts the full-screen
     /// notifications, and the state is read from this one alone.
     @State private var home = Home()
+    /// The tab under the pointer, grown to full width while the rest give
+    /// it room — bullets in a tube: the run never changes length.
+    @State private var hovered: Tab.ID?
 
     private final class Home {
         weak var window: NSWindow?
+        /// Not state: bumping it shouldn't redraw the row.
+        var hoverTicket = 0
     }
 
     var body: some View {
@@ -57,21 +62,29 @@ struct TabBar: View {
                     // keeping the tab you are on in view.
                     ScrollViewReader { reader in
                         ScrollView(.horizontal, showsIndicators: false) {
+                            let base = width(in: geo.size.width)
+                            let circled = circled(in: geo.size.width)
+                            let grow = growth(in: geo.size.width)
                             HStack(spacing: Metrics.tabGap) {
                                 ForEach(Array(browser.tabs.enumerated()), id: \.element.id) { index, tab in
                                     // A pinned square moves among pinned squares, a title
                                     // among titles: each has its own stride.
-                                    let step = (tab.pin != nil ? Metrics.pinWidth : width(in: geo.size.width)) + Metrics.tabGap
+                                    let step = (tab.pin != nil ? Metrics.pinWidth : base) + Metrics.tabGap
                                     let held = dragging == tab.id
+                                    let grown = grow != nil && tab.id == hovered
+                                    let own = grown ? grow!.grown : (grow?.others ?? base)
                                     TabPill(
                                         browser: browser,
                                         prefs: browser.prefs,
                                         tab: tab,
                                         live: tab.id == browser.activeID,
-                                        width: width(in: geo.size.width),
+                                        width: own,
                                         room: geo.size.width - lead - 12,
                                         pill: pill,
-                                        close: { browser.close(tab) }
+                                        close: { browser.close(tab) },
+                                        circle: circled && tab.pin == nil && !grown,
+                                        shape: grown ? own : base,
+                                        onHover: { hover(tab.id, $0) }
                                     )
                                     // The row reflows around it while the pill itself keeps
                                     // up with the hand: what it has travelled, less the
@@ -262,15 +275,62 @@ struct TabBar: View {
     /// Every loose tab is the same width, so the cross is always in the same
     /// place. Past a dozen or so they start giving ground; too narrow for a
     /// title they show their mark alone (Metrics.tabTitled), down to the
-    /// mark and its air. Past that, the run scrolls. The pinned squares take
-    /// their room off the top.
+    /// mark and its air. Past that they go to circles. The pinned squares
+    /// take their room off the top.
     private func width(in strip: CGFloat) -> CGFloat {
+        if circled(in: strip) { return Metrics.tabCircle }
         let pinned = CGFloat(browser.pinnedCount)
         let loose = CGFloat(browser.tabs.count) - pinned
         guard loose > 0 else { return Metrics.tabWidth }
         let spent = pinned * Metrics.pinWidth
             + CGFloat(max(0, browser.tabs.count - 1)) * Metrics.tabGap
         return max(Metrics.tabMinWidth, min(Metrics.tabWidth, (room(in: strip) - spent) / loose))
+    }
+
+    /// The hovered tab's width and everyone else's. The loose tabs keep the
+    /// length they had between them, so nothing past the run moves and the
+    /// pointer stays inside the tab it grew: every tab before it gives up
+    /// less than the tab gains.
+    private func growth(in strip: CGFloat) -> (grown: CGFloat, others: CGFloat)? {
+        guard let id = hovered, dragging == nil, browser.editingTab == nil,
+              let tab = browser.tabs.first(where: { $0.id == id }), tab.pin == nil
+        else { return nil }
+        let base = width(in: strip)
+        let loose = CGFloat(browser.tabs.count - browser.pinnedCount)
+        guard base < Metrics.tabWidth - 0.5, loose > 1 else { return nil }
+        let length = loose * base
+        // Titled tabs keep a title's worth; marks and circles can go smaller.
+        let floor: CGFloat = circled(in: strip) || base < Metrics.tabTitled ? 20 : 48
+        let grown = min(Metrics.tabWidth, length - (loose - 1) * floor)
+        guard grown > base + 1 else { return nil }
+        return (grown, (length - grown) / (loose - 1))
+    }
+
+    /// Moving from one tab to the next crosses a two-point gap; letting go
+    /// waits a beat so the row doesn't collapse and regrow in between.
+    private func hover(_ id: Tab.ID, _ on: Bool) {
+        home.hoverTicket += 1
+        if on {
+            if hovered != id { withAnimation(Motion.glide) { hovered = id } }
+        } else if hovered == id {
+            let ticket = home.hoverTicket
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                guard ticket == home.hoverTicket else { return }
+                withAnimation(Motion.glide) { hovered = nil }
+            }
+        }
+    }
+
+    /// True when there are too many tabs for even their narrowest titled
+    /// form — they become circles instead of scrolling.
+    private func circled(in strip: CGFloat) -> Bool {
+        let pinned = CGFloat(browser.pinnedCount)
+        let loose = CGFloat(browser.tabs.count) - pinned
+        guard loose > 0 else { return false }
+        let spent = pinned * Metrics.pinWidth
+            + CGFloat(max(0, browser.tabs.count - 1)) * Metrics.tabGap
+        let each = (room(in: strip) - spent) / loose
+        return each < Metrics.tabMinWidth
     }
 }
 
@@ -338,16 +398,34 @@ private struct TabPill: View {
     let room: CGFloat
     let pill: Namespace.ID
     let close: () -> Void
+    /// True when all tabs have been compacted to circles.
+    var circle = false
+    /// The width that decides how it is drawn — its resting width, so the
+    /// others keep their look while they make room for a hovered one.
+    var shape: CGFloat?
+    var onHover: ((Bool) -> Void)?
 
     @State private var hovering = false
     @State private var shake: CGFloat = 0
+    @State private var volumeHover = false
+    @State private var mediaHover = false
 
     private var editing: Bool { browser.editingTab == tab.id }
     private var pinned: Bool { tab.pin != nil && !editing }
     /// Too narrow for a title: the site's mark alone, the title in the
     /// tooltip, and ⌘W or the menu to close it — a cross on something this
     /// small would be what a click to pick the tab lands on.
-    private var compact: Bool { !editing && !pinned && width < Metrics.tabTitled }
+    private var compact: Bool { !editing && !pinned && (shape ?? width) < Metrics.tabTitled }
+    /// The tab has media to control — no width check, since the buttons
+    /// only appear on hover over the favicon.
+    private var showMedia: Bool { !editing && !pinned && tab.hasMedia }
+
+    /// How much to tighten padding and spacing as tabs shrink, so the
+    /// title keeps as much room as possible.
+    private func squeeze(_ w: CGFloat) -> CGFloat {
+        guard w > Metrics.tabTitled else { return 0.5 }
+        return max(0.5, min(1, (w - Metrics.tabTitled) / (Metrics.tabWidth - Metrics.tabTitled)))
+    }
 
     /// A pinned tab is a square, an edited one is a field, everything else is
     /// its share of what is left.
@@ -380,9 +458,9 @@ private struct TabPill: View {
                 loose
             }
         }
-        .background { ground }
+        .background { if !circle { ground } }
         .modifier(Shake(travel: shake))
-        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 9, style: .continuous)))
         // Never both at once.
         //
         // A view carrying a single tap *and* a double tap has to wait out the
@@ -404,10 +482,14 @@ private struct TabPill: View {
             }
         })
         .overlay { MiddleClick(act: close) }
-        .onHover { hovering = $0 }
+        .onHover { on in
+            hovering = on
+            onHover?(on)
+        }
         .contextMenu { TabMenu(browser: browser, tab: tab, close: close) }
-        .help(pinned || compact ? tab.label : "")
+        .help(pinned ? tab.label : "")
         .animation(Motion.quick, value: hovering)
+        .animation(Motion.settle, value: tab.hasMedia)
         .animation(Motion.glide, value: editing)
         .animation(Motion.glide, value: tab.pin)
         .onChange(of: browser.refusals) { _, _ in
@@ -421,7 +503,9 @@ private struct TabPill: View {
 
     @ViewBuilder
     private var loose: some View {
-        if compact {
+        if circle {
+            circleView
+        } else if compact {
             ZStack {
                 if tab.loading {
                     Ring()
@@ -437,27 +521,98 @@ private struct TabPill: View {
         }
     }
 
-    private var titled: some View {
-        HStack(spacing: 6) {
+    private var circleView: some View {
+        ZStack {
+            if tab.loading {
+                Ring(size: 12)
+            } else {
+                Mark(icon: prefs.glyph == .icons ? tab.icon : nil, letter: tab.monogram, size: 14, dim: tab.asleep)
+            }
+        }
+        .frame(width: min(Metrics.tabCircle, width), height: min(Metrics.tabCircle, width))
+        .frame(width: width, height: Metrics.tabCircle)
+        .background(
+            Circle()
+                .fill(live ? Palette.wash : (hovering ? Palette.hover : Palette.wash.opacity(0.45)))
+        )
+    }
+
+    private var titled: some View { titled(span) }
+
+    /// The controls only open in a tab wide enough for them — a hovered one
+    /// grows to that — or they would push the cross out past its edge.
+    private func titled(_ w: CGFloat) -> some View {
+        let squeeze = squeeze(w)
+        let hot = hovering
+        let controls = showMedia && mediaHover && w >= 140
+        return HStack(spacing: max(3, 6 * squeeze)) {
             if editing {
                 TabAddressField(browser: browser)
                     .frame(height: 16)
             } else {
-                if prefs.glyph == .icons, !tab.isBlank {
-                    Mark(icon: tab.icon, letter: tab.monogram, size: 15)
+                // The favicon area. When the tab is playing media, hovering
+                // here slides the icon away and two controls in: play/pause
+                // on the left, volume on the right. Leaving brings the icon
+                // back. The slider only adds itself while the volume icon is
+                // under the pointer, so the title keeps as much room as it
+                // can.
+                Group {
+                    if controls {
+                        HStack(spacing: 2) {
+                            Button { tab.togglePlayback() } label: {
+                                Image(systemName: tab.noisy ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundStyle(Palette.muted)
+                                    .frame(width: 15, height: 15)
+                                    .background(Palette.ink.opacity(0.07), in: Circle())
+                            }
+                            .buttonStyle(.plain)
+
+                            HStack(spacing: 3) {
+                                Image(systemName: volumeIcon)
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(Palette.muted)
+                                    .frame(width: 15, height: 15)
+                                if volumeHover {
+                                    VolumeSlider(value: Binding(
+                                        get: { tab.volume },
+                                        set: { tab.setVolume($0) }
+                                    ))
+                                    .frame(width: 48)
+                                    .transition(.opacity.combined(with: .scale(scale: 0.6, anchor: .leading)))
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .onHover { volumeHover = $0 }
+                            .animation(Motion.settle, value: volumeHover)
+                        }
+                        .transition(.scale(scale: 0.6, anchor: .leading).combined(with: .opacity))
+                    } else {
+                        Group {
+                            if showMedia || (prefs.glyph == .icons && !tab.isBlank) {
+                                Mark(icon: prefs.glyph == .icons ? tab.icon : nil, letter: tab.monogram, size: 15)
+                            }
+                        }
+                        .transition(.scale(scale: 0.6, anchor: .leading).combined(with: .opacity))
+                    }
                 }
-                if tab.bench {
-                    // A script's tab, not yours.
-                    Image(systemName: "flask")
-                        .font(.system(size: 9))
-                        .foregroundStyle(colour.opacity(0.7))
+                .onHover { on in if showMedia { mediaHover = on } }
+                .animation(Motion.settle, value: mediaHover)
+                .animation(Motion.quick, value: tab.noisy)
+
+                if !showMedia {
+                    if tab.bench {
+                        Image(systemName: "flask")
+                            .font(.system(size: 9))
+                            .foregroundStyle(colour.opacity(0.7))
+                    }
+                    if tab.shy {
+                        Image(systemName: "eye.slash")
+                            .font(.system(size: 9))
+                            .foregroundStyle(colour.opacity(0.7))
+                    }
                 }
-                if tab.shy {
-                    // Quiet, and only on the tabs that keep nothing.
-                    Image(systemName: "eye.slash")
-                        .font(.system(size: 9))
-                        .foregroundStyle(colour.opacity(0.7))
-                }
+
                 Text(tab.label)
                     .font(.system(size: 12.5))
                     .lineLimit(1)
@@ -467,11 +622,8 @@ private struct TabPill: View {
 
             Spacer(minLength: 2)
 
-            // Pinned to the right-hand end of the pill, not trailing the title.
-            // One slot doing two jobs: the cross when the pointer is here, the
-            // ring while the page is still coming, never both.
             ZStack {
-                if hovering {
+                if hot {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(Palette.muted)
@@ -480,8 +632,7 @@ private struct TabPill: View {
                         .transition(.opacity)
                 } else if tab.loading {
                     Ring().transition(.opacity)
-                } else if tab.noisy {
-                    // Which tab the noise is coming from. ⌘⇧M stops it.
+                } else if tab.noisy, !mediaHover {
                     Image(systemName: "speaker.wave.2.fill")
                         .font(.system(size: 8))
                         .foregroundStyle(Palette.muted)
@@ -490,26 +641,28 @@ private struct TabPill: View {
             }
             .frame(width: editing ? 0 : 15, height: 15)
             .opacity(editing ? 0 : 1)
-            // The cross is 15 points across because that is how big it should
-            // look. What you have to hit is the whole right-hand end of the
-            // tab: an overlay is not laid out, so it can reach past its own
-            // frame without moving anything that is.
             .overlay {
                 if !editing {
                     Color.clear
                         .frame(width: 30, height: 28)
                         .contentShape(Rectangle())
-                        .onTapGesture { if hovering { close() } }
+                        .onTapGesture { if hot { close() } }
                 }
             }
-            .animation(Motion.quick, value: hovering)
+            .animation(Motion.quick, value: hot)
             .animation(Motion.quick, value: tab.loading)
             .animation(Motion.quick, value: tab.noisy)
         }
-        .padding(.leading, 11)
-        .padding(.trailing, editing ? 11 : 7)
+        .padding(.leading, max(5, 11 * squeeze))
+        .padding(.trailing, editing ? 11 : max(4, 7 * squeeze))
         .padding(.vertical, 6)
-        .frame(width: span, alignment: .leading)
+        .frame(width: w, alignment: .leading)
+    }
+
+    private var volumeIcon: String {
+        if tab.volume < 0.01 { return "speaker.slash.fill" }
+        if tab.volume < 0.4 { return "speaker.wave.1.fill" }
+        return "speaker.wave.2.fill"
     }
 
     @ViewBuilder
@@ -753,6 +906,40 @@ struct MiddleClick: NSViewRepresentable {
             if bounds.contains(convert(event.locationInWindow, from: nil)) { act() }
         }
     }
+}
+
+/// A thin track with a filled portion — click or drag anywhere on it to set
+/// the level. No thumb: the track itself is the affordance, the same weight
+/// as the icons beside it.
+private struct VolumeSlider: View {
+    @Binding var value: CGFloat
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Palette.ink.opacity(0.09))
+                Capsule().fill(VolumeSlider.tint).frame(width: max(3, w * value))
+            }
+            .frame(height: 3)
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        value = max(0, min(1, drag.location.x / w))
+                    }
+            )
+        }
+        .frame(height: 15)
+    }
+
+    private static let tint = Color(nsColor: NSColor(name: nil) { appearance in
+        let dim = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        return dim
+            ? NSColor(red: 0.4, green: 0.6, blue: 0.92, alpha: 1)
+            : NSColor(red: 0.25, green: 0.48, blue: 0.85, alpha: 1)
+    })
 }
 
 /// An almost-closed ring, turning — the same one the canvas app uses, small

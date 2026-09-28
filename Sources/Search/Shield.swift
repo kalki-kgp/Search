@@ -66,8 +66,10 @@ final class Shield: ObservableObject {
     private static let rules = folder.appendingPathComponent("rules", isDirectory: true)
     private static let manifestFile = folder.appendingPathComponent("manifest.json")
 
-    /// The lists are a week old at most, as Brave's are.
-    private static let freshFor: TimeInterval = 7 * 24 * 60 * 60
+    /// A day old at most. YouTube changes its anti-adblock wall every few
+    /// days and uBlock's quick fixes answer it as often; a week-old set is
+    /// how the wall gets through.
+    private static let freshFor: TimeInterval = 24 * 60 * 60
     private static let catalog = URL(string: "https://raw.githubusercontent.com/brave/adblock-resources/master/filter_lists/list_catalog.json")!
 
     struct Manifest: Codable {
@@ -190,10 +192,12 @@ final class Shield: ObservableObject {
     /// the next document. Nothing for a site with none, or where blocking is
     /// off.
     func scripts(for host: String?) -> [WKUserScript] {
-        guard enabled, let host = host?.lowercased(), !host.isEmpty, !isPaused(on: host),
-              let sites, let site = sites.site(for: host)
-        else { return [] }
+        guard enabled, let host = host?.lowercased(), !host.isEmpty, !isPaused(on: host) else { return [] }
         var out: [WKUserScript] = []
+        if host == "www.youtube.com" {
+            out.append(WKUserScript(source: Shield.youtubeWall, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+        guard let sites, let site = sites.site(for: host) else { return out }
         if !site.calls.isEmpty {
             let library = site.deps.compactMap { sites.library($0) }.joined(separator: "\n")
             let host = Shield.jsString(host)
@@ -218,6 +222,64 @@ final class Shield: ObservableObject {
         }
         return out
     }
+
+    /// YouTube's newest wall comes back as `status: "ERROR"` with an
+    /// `enforcementMessageViewModel`, a shape uBlock's recovery script
+    /// doesn't recognise yet, so its retry never runs. This is that retry,
+    /// for that shape: tag the client the way uBlock does ("channel", then
+    /// the others), which its request-editing scriptlets turn into a request
+    /// YouTube answers, and load the video again. A tag that works is kept,
+    /// so the next video doesn't hit the wall at all.
+    ///
+    /// Woken only by YouTube's own page events and a few checks after each —
+    /// no observer over the page, nothing running while a video plays.
+    private static let youtubeWall = """
+    (function () {
+      if (window.__searchWall) return;
+      window.__searchWall = true;
+      var tags = ['channel', 'lactmilli', 'instream', 'yahi'], at = -1, base = null, tries = 0, timer = 0;
+      function walled(r) {
+        var s = r && r.playabilityStatus;
+        return !!(s && s.status !== 'OK' && s.errorScreen && s.errorScreen.enforcementMessageViewModel);
+      }
+      function clear() {
+        var f = document.querySelector('ytd-watch-flexy[player-unavailable]');
+        if (f) f.removeAttribute('player-unavailable');
+        var e = document.querySelector('yt-playability-error-supported-renderers');
+        if (e) e.hidden = true;
+      }
+      function check() {
+        timer = 0;
+        var p = document.getElementById('movie_player');
+        var r = p && p.getPlayerResponse && p.getPlayerResponse();
+        if (!r) { if (++tries < 8) timer = setTimeout(check, 500); return; }
+        if (!walled(r)) {
+          if (r.playabilityStatus && r.playabilityStatus.status === 'OK' && at >= 0) clear();
+          return;
+        }
+        var c = window.ytcfg && ytcfg.data_ && ytcfg.data_.INNERTUBE_CONTEXT && ytcfg.data_.INNERTUBE_CONTEXT.client;
+        if (!c || !c.userAgent || at + 1 >= tags.length) return;
+        if (base === null) base = c.userAgent;
+        at += 1;
+        c.userAgent = base.replace(/Mozilla\\/5\\.0 \\([^)]+/, function (m) { return m + '; ' + tags[at]; });
+        var id = (r.videoDetails && r.videoDetails.videoId) || new URLSearchParams(location.search).get('v');
+        var start = (r.playerConfig && r.playerConfig.playbackStartConfig && r.playerConfig.playbackStartConfig.startSeconds) || 0;
+        if (!id) return;
+        p.loadVideoById(id, start);
+        tries = 0;
+        timer = setTimeout(check, 1500);
+      }
+      function soon() {
+        var e = document.querySelector('yt-playability-error-supported-renderers');
+        if (e) e.hidden = false;
+        tries = 0;
+        clearTimeout(timer);
+        timer = setTimeout(check, 400);
+      }
+      window.addEventListener('yt-navigate-finish', soon);
+      window.addEventListener('yt-page-data-updated', soon);
+    })();
+    """
 
     private static let procedural: String? = Bundle.main.url(forResource: "procedural", withExtension: "js")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }

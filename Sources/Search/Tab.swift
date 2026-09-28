@@ -199,6 +199,13 @@ final class Tab: ObservableObject, Identifiable {
     /// which tab it is coming from.
     @Published var noisy = false
 
+    /// True once the page has played audio, until the next navigation. The
+    /// media controls stay on the tab even while the video is paused.
+    @Published var hasMedia = false
+
+    /// Per-tab volume, 0 to 1. Every media element on the page follows it.
+    @Published var volume: CGFloat = 1
+
     /// WebKit's word on the camera and microphone, and the names the page's
     /// frames gave them (see Capture.swift).
     @Published private(set) var camera: WKMediaCaptureState = .none
@@ -419,7 +426,10 @@ final class Tab: ObservableObject, Identifiable {
         images.tab = self
         shop.tab = self
         capture.tab = self
-        ears.watch(web) { [weak self] on in self?.noisy = on }
+        ears.watch(web) { [weak self] on in
+            self?.noisy = on
+            if on { self?.hasMedia = true }
+        }
         return web
     }
 
@@ -442,6 +452,27 @@ final class Tab: ObservableObject, Identifiable {
         guard web.magnification != 1 else { return }
         web.magnification = 1
         onZoom?(self, 1)
+    }
+
+    // MARK: - media
+
+    func setVolume(_ value: CGFloat) {
+        volume = max(0, min(1, value))
+        let v = volume
+        built?.evaluateJavaScript(
+            "window.__searchVol=\(v);document.querySelectorAll('video, audio').forEach(function(m){m.volume=\(v)})"
+        )
+    }
+
+    func togglePlayback() {
+        guard hasMedia else { return }
+        if noisy {
+            web.pauseAllMediaPlayback()
+        } else {
+            web.evaluateJavaScript(
+                "document.querySelectorAll('video, audio').forEach(function(m){if(m.paused)m.play().catch(function(){})})"
+            )
+        }
     }
 
     // MARK: - taking things off the page
@@ -481,6 +512,11 @@ final class Tab: ObservableObject, Identifiable {
         // Every frame: a call is often an embed on someone else's page.
         controller.addUserScript(
             WKUserScript(source: CaptureRelay.watch, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        )
+        // Every frame: apply the tab's volume to every media element that
+        // starts playing, so per-tab volume works for embedded players too.
+        controller.addUserScript(
+            WKUserScript(source: Tab.volumeScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
         // Every frame: videos are embedded more often than not.
         if Speed.on {
@@ -641,6 +677,8 @@ final class Tab: ObservableObject, Identifiable {
         reader = false
         typing = false
         immersed = false
+        hasMedia = false
+        volume = 1
         // Sent somewhere new, a sleeping tab is simply awake again — with
         // nothing of where it was before to bring back.
         pending = nil
@@ -965,6 +1003,20 @@ final class Tab: ObservableObject, Identifiable {
         web.uiDelegate = nil
         web.removeFromSuperview()
     }
+
+    /// Applies the tab's volume level to every media element, including
+    /// ones that appear later or live inside shadow roots that call play().
+    static let volumeScript = """
+    (function () {
+      if (window.__searchVol !== undefined) return;
+      window.__searchVol = 1;
+      var play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        if (typeof window.__searchVol === 'number') this.volume = window.__searchVol;
+        return play.apply(this, arguments);
+      };
+    })();
+    """
 }
 
 

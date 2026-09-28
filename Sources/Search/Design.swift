@@ -117,6 +117,8 @@ enum Metrics {
     static let tabWidth: CGFloat = 186
     static let tabTitled: CGFloat = 80
     static let tabMinWidth: CGFloat = 36
+    /// A tab compacted to a circle when the row can't hold them all.
+    static let tabCircle: CGFloat = 28
     static let tabGap: CGFloat = 2
     /// A pinned tab is a square the height of the row, holding one letter.
     static let pinWidth: CGFloat = 30
