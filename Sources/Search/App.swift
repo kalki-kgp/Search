@@ -390,6 +390,8 @@ struct ContentView: View {
             if !browser.prefs.sidebar, !browser.folded, fullscreenTab == nil {
                 TabBar(browser: browser)
                     .transition(.move(edge: .top).combined(with: .opacity))
+                    // Over the bookmarks bar, for the picture a tab shows below it.
+                    .zIndex(1)
             }
 
             // The bookmarks bar, under the strip or beside the column's top.

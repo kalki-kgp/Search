@@ -31,9 +31,21 @@ struct TabBar: View {
     /// it room — bullets in a tube: the run never changes length.
     @State private var hovered: Tab.ID?
 
+    /// A picture of the tab under the pointer, below it, once the pointer
+    /// has rested there (see `wantPeek`).
+    @State private var peek: Peek?
+    /// Where the hovered tab is in the row, reported by the tab itself.
+    @State private var peekFrame: CGRect = .zero
+
+    private struct Peek: Equatable {
+        let id: Tab.ID
+        let image: NSImage?
+    }
+
     private final class Home {
         /// Not state: bumping it shouldn't redraw the row.
         var hoverTicket = 0
+        var peekTicket = 0
         /// A tab is being carried: nothing grows until it is put down.
         var lifted = false
     }
@@ -192,6 +204,18 @@ struct TabBar: View {
                 .padding(.leading, lights)
                 .padding(.trailing, 12)
                 .coordinateSpace(name: "strip")
+                .onPreferenceChange(HoverFrame.self) { peekFrame = $0 }
+                // Below the tab, over the page; never in the way of a click.
+                .overlay(alignment: .topLeading) {
+                    if let peek, let tab = browser.tabs.first(where: { $0.id == peek.id }) {
+                        TabPeek(tab: tab, image: peek.image)
+                            .offset(x: min(max(8, peekFrame.midX - TabPeek.width / 2), geo.size.width - TabPeek.width - 8),
+                                    y: peekFrame.maxY + 8)
+                            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .animation(Motion.quick, value: peek)
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -212,6 +236,10 @@ struct TabBar: View {
         }
         .animation(Motion.quick, value: landing)
         .animation(Motion.glide, value: browser.activeID)
+        .onChange(of: browser.activeID) { _, _ in
+            home.peekTicket += 1
+            peek = nil
+        }
         // The row makes room for the field on the same spring as everything
         // else. Without this the widths changed between one frame and the next
         // and the tabs appeared to jump aside.
@@ -306,6 +334,7 @@ struct TabBar: View {
                               outside: { browser.dragOut(tab) }, browser: browser, tab: tab,
                               lift: { up in
                                   home.lifted = up
+                                  if up { home.peekTicket += 1; peek = nil }
                                   if up, hovered != nil { withAnimation(Motion.glide) { hovered = nil } }
                               }) {
                 if browser.prefs.usesTabGroups && tab.pin == nil {
@@ -471,6 +500,7 @@ struct TabBar: View {
         home.hoverTicket += 1
         // A tab being carried keeps the width it was picked up at.
         if on && NSEvent.pressedMouseButtons & 1 != 0 { return }
+        wantPeek(on ? id : nil, leaving: id)
         if on {
             if hovered != id { withAnimation(Motion.glide) { hovered = id } }
         } else if hovered == id {
@@ -478,6 +508,36 @@ struct TabBar: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                 guard ticket == home.hoverTicket else { return }
                 withAnimation(Motion.glide) { hovered = nil }
+            }
+        }
+    }
+
+    /// The picture comes after half a second's rest on a tab, and at once
+    /// when one is already up and the pointer moves along to the next. It is
+    /// asked for then and only for that tab — nothing is taken ahead of time
+    /// or kept once it's gone. The tab you're on has none: its page is there.
+    private func wantPeek(_ id: Tab.ID?, leaving: Tab.ID) {
+        home.peekTicket += 1
+        let ticket = home.peekTicket
+        guard let id else {
+            guard peek?.id == leaving || peek == nil else { return }
+            // A beat's grace, so crossing the gap to the next tab keeps it up.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                guard ticket == home.peekTicket else { return }
+                peek = nil
+            }
+            return
+        }
+        guard id != browser.activeID, !home.lifted, browser.editingTab == nil,
+              let tab = browser.tabs.first(where: { $0.id == id }) else {
+            peek = nil
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (peek == nil ? 0.5 : 0)) {
+            guard ticket == home.peekTicket else { return }
+            tab.preview(width: TabPeek.width) { image in
+                guard ticket == home.peekTicket, id != browser.activeID else { return }
+                peek = Peek(id: id, image: image)
             }
         }
     }
@@ -673,8 +733,15 @@ private struct TabPill: View {
             hovering = on
             onHover?(on)
         }
+        // Only the tab under the pointer says where it is, for its picture.
+        .background {
+            if hovering {
+                GeometryReader { box in
+                    Color.clear.preference(key: HoverFrame.self, value: box.frame(in: .named("strip")))
+                }
+            }
+        }
         .contextMenu { TabMenu(browser: browser, tab: tab, close: close) }
-        .help(pinned ? tab.label : "")
         .animation(Motion.quick, value: hovering)
         .animation(Motion.settle, value: tab.hasMedia)
         .animation(Motion.glide, value: editing)
@@ -1592,5 +1659,61 @@ struct PinField: NSViewRepresentable {
             let browser = browser
             DispatchQueue.main.async { browser.endPinEdit() }
         }
+    }
+}
+
+/// Where the tab under the pointer is, in the strip's own coordinates.
+private struct HoverFrame: PreferenceKey {
+    static let defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next != .zero { value = next }
+    }
+}
+
+/// The tab under the pointer, pictured below it: its page as it was last
+/// drawn, its title, and where it is.
+private struct TabPeek: View {
+    static let width: CGFloat = 260
+
+    @ObservedObject var tab: Tab
+    let image: NSImage?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                Palette.wash
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: Self.width, height: Self.width * 0.6, alignment: .top)
+                } else {
+                    Mark(icon: tab.icon, letter: tab.monogram, size: 24, dim: tab.asleep)
+                }
+            }
+            .frame(width: Self.width, height: Self.width * 0.6)
+            .clipped()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tab.label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let host = tab.address?.host() {
+                    Text(host)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.muted)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .frame(width: Self.width, alignment: .leading)
+        .background(Palette.ground)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.hairline))
+        .shadow(color: .black.opacity(0.16), radius: 18, y: 8)
     }
 }
