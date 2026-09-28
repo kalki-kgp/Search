@@ -46,12 +46,6 @@ enum WhatsNew {
 
         Toggle(title: "Spaces", detail: "Separate sets of tabs, each with its own sign-ins. ⌃1–⌃9 to switch.",
                since: "1.0.1", get: { $0.usesSpaces }, set: { $0.usesSpaces = $1 }),
-        Toggle(title: "A sidebar that hides", detail: "The page takes the whole window; the tabs come out at the edge.",
-               since: "1.0.1", get: { $0.sidebar && $0.sideHides },
-               set: { prefs, on in
-                   if on { prefs.sidebar = true }
-                   prefs.sideHides = on
-               }),
         Toggle(title: "Bookmarks bar", detail: "Your bookmarks in a row above the page.",
                since: "1.0.2", get: { $0.bookmarksBar }, set: { $0.bookmarksBar = $1 }),
         Toggle(title: "Float the video when you switch apps", detail: "A playing video follows you out into a small window.",
