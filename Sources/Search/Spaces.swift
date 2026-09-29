@@ -80,7 +80,12 @@ enum Spaces {
         guard let data = try? JSONEncoder().encode(spaces) else { return }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: file, options: .atomic)
+        // Every window's list follows (see Browser.init).
+        NotificationCenter.default.post(name: changed, object: spaces)
     }
+
+    /// The list of spaces changed, in one window or another.
+    static let changed = Notification.Name("SearchSpacesChanged")
 
     /// The space new tabs are made in: the one on screen.
     @MainActor static var current = Space.firstID
@@ -95,8 +100,16 @@ enum Spaces {
         if id == Space.firstID || sharing.contains(id) { return Store.websites }
         if let made = stores[id] { return made }
         let made = WKWebsiteDataStore(forIdentifier: id)
+        if Store.keepsSignIns { Store.followSignIns(made) }
         stores[id] = made
         return made
+    }
+
+    /// The shared store and every space's own made so far. Not a private
+    /// tab's: each has a store of its own, out of this list on purpose, so
+    /// tracking prevention stays on there whatever the switch says.
+    @MainActor static var everyStore: [WKWebsiteDataStore] {
+        [Store.websites] + stores.values
     }
 
     /// A space's store and everything in it, gone. What it holds — cookies,
@@ -109,6 +122,9 @@ enum Spaces {
         // And once more a moment later, for what its closing tabs were
         // still writing — the cache of the page on screen, for one.
         let store = store(for: id)
+        // The space's downloads would have kept its store, and asked with
+        // its cookies again: they go with it.
+        Browsers.acting.forgetDownloads(of: store)
         let everything = WKWebsiteDataStore.allWebsiteDataTypes()
         store.removeData(ofTypes: everything, modifiedSince: .distantPast) {}
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -145,6 +161,11 @@ enum Spaces {
 struct Parked {
     var tabs: [Tab]
     var active: Tab.ID?
+    var splits: [TabSplit] = []
+    /// Its groups, as its file has them: kept here so that writing the row,
+    /// or coming back to the space, doesn't read and decode the file again
+    /// on the main thread. Nil when unknown, for the file to say.
+    var groups: [TabGroup]? = nil
 }
 
 extension Browser {
@@ -172,18 +193,26 @@ extension Browser {
         cancelTabEdit()
         if floater.showing { land() }
         writeSession(now: true)
+        for tab in tabs where visibleTabIDs.contains(tab.id) { tab.touch() }
 
-        // The row on screen is parked as it is. Its sound stops: a space
-        // you left is not one you are listening to.
-        for tab in tabs where tab.built != nil { tab.web.pauseAllMediaPlayback() }
-        parked[spaceID] = Parked(tabs: tabs, active: activeID)
+        // The row on screen is parked as it is, sound and all: music or a
+        // stream keeps playing in the space you left, as it does in a tab
+        // you left. ⌘⇧M, or its speaker, stops it.
+        parked[spaceID] = Parked(tabs: tabs, active: activeID, splits: splits, groups: tabGroups)
 
         spaceID = id
-        Spaces.current = id
-        Store.settings.set(id.uuidString, forKey: "space.current")
+        // A space kept in memory has its groups with it; one that isn't is
+        // read whole just below (restoreSession), groups included.
+        tabGroups = parked[id]?.groups ?? []
+        // The space new pages are made in, when this is the window in front;
+        // and the one to come back to, when this is the oldest window.
+        if Browsers.front === self || Browsers.front == nil { Spaces.current = id }
+        if usesFiles { Store.settings.set(id.uuidString, forKey: "space.current") }
         if let back = parked.removeValue(forKey: id), !back.tabs.isEmpty {
-            showRow(back.tabs, active: back.active)
-            if let active, !active.wake() { active.revive() }
+            showRow(back.tabs, active: back.active, splits: back.splits)
+            for tab in tabs where visibleTabIDs.contains(tab.id) {
+                if !tab.wake() { tab.revive() }
+            }
         } else {
             showRow([], active: nil)
             restoreSession()
@@ -191,7 +220,9 @@ extension Browser {
         editing = active?.isBlank ?? true
         typed = ""
         askFocus()
-        announce(space.name)
+        // Beside the space's icon when the tabs are on screen (SpaceDot);
+        // folded away, at the bottom.
+        if folded && !peeking { announce(space.name) }
     }
 
     /// Every other space's row, made ahead of time, so the column can show
@@ -213,14 +244,19 @@ extension Browser {
         return Spaces.icons.first { !used.contains($0) } ?? "briefcase"
     }
 
-    /// A new space, empty, and on screen — signed in where the others are,
-    /// or starting afresh with its own cookies and sign-ins.
+    /// A new space — signed in where the others are, or starting afresh with
+    /// its own cookies and sign-ins. By default it starts empty and on screen.
     func addSpace(named name: String, icon: String? = nil, sharesSignIns: Bool = true) {
         makingSpace = false
         let made = Space(id: UUID(), name: name, colour: 0, icon: icon ?? freeIcon, sharesSignIns: sharesSignIns)
         spaces.append(made)
         Spaces.write(spaces)
-        switchSpace(to: made.id)
+        if let afterSpaceCreated {
+            self.afterSpaceCreated = nil
+            afterSpaceCreated(made)
+        } else {
+            switchSpace(to: made.id)
+        }
     }
 
     /// Dragged to another place among the dots. ⌃1–⌃9 follow the order.
@@ -230,14 +266,25 @@ extension Browser {
         Spaces.write(spaces)
     }
 
-    /// "New Space…": the card in the column when the column is there to
-    /// hold it, a question otherwise.
-    func askForSpace() {
-        if prefs.sidebar, !folded || peeking {
-            withAnimation(Motion.glide) { makingSpace = true }
+    /// "New Space…": the card for a new space, in the column or the bar.
+    func askForSpace(then onCreated: ((Space) -> Void)? = nil) {
+        afterSpaceCreated = onCreated
+        // In place, where the next space would come in, in the column or the
+        // bar alike; a question only while the tabs are folded out of sight.
+        if !folded || peeking {
+            let here = spaces.firstIndex { $0.id == spaceID } ?? 0
+            SpaceSwipe.shared.start(for: self)
+            SpaceSwipe.shared.slide(self, to: spaces.count, from: here)
         } else {
-            Ask.newSpace { name, shared in self.addSpace(named: name, sharesSignIns: shared) }
+            Ask.newSpace(
+                then: { name, shared in self.addSpace(named: name, sharesSignIns: shared) },
+                cancelled: { self.cancelSpaceCreation() }
+            )
         }
+    }
+
+    func cancelSpaceCreation() {
+        afterSpaceCreated = nil
     }
 
     func renameSpace(_ id: UUID, to name: String) {
@@ -268,6 +315,10 @@ extension Browser {
         spaces.remove(at: at)
         Spaces.write(spaces)
         Session.erase(space: id)
+        // Gone from the other windows too: their rows there, and the space
+        // itself if one was showing it (the list's change moves it).
+        for other in Browsers.all where other !== self { other.forget(space: id) }
+        Pins.forget(id)
         // A space signed in with the others has nothing of its own to erase:
         // its cookies are theirs.
         if !shared { Spaces.erase(id) }
@@ -295,6 +346,9 @@ struct SpaceDot: View {
     /// frame with nothing animated (see SpaceSwipe.slide), and the icon
     /// turns over just after, on a change of its own.
     @State private var shown: (key: String, symbol: String)?
+    /// The space's name, for a moment after a switch (see naming()).
+    @State private var named: String?
+    @State private var naming = 0
 
     static let width: CGFloat = 26
 
@@ -308,7 +362,11 @@ struct SpaceDot: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(hovering ? Palette.ink : Palette.muted)
                     .id(shown?.key ?? key)
-                    .transition(.push(from: browser.spaceStep > 0 ? .trailing : .leading))
+                    // The way the tabs go: sideways in the column; in the bar
+                    // across the top, up for the next space, down going back.
+                    .transition(.push(from: browser.prefs.sidebar
+                        ? (browser.spaceStep > 0 ? .trailing : .leading)
+                        : (browser.spaceStep > 0 ? .bottom : .top)))
             }
             .frame(width: SpaceDot.width, height: 26)
             .clipped()
@@ -320,14 +378,49 @@ struct SpaceDot: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("\(browser.space.name) — ⌃1–⌃9 or two fingers sideways to switch")
+        .help("\(browser.space.name) — ⌃1–⌃9, or two fingers \(browser.prefs.sidebar ? "sideways" : "up or down") over the tabs, to switch")
         .onChange(of: key) { _, now in
             let symbol = symbol
             DispatchQueue.main.async {
                 withAnimation(.easeOut(duration: 0.22)) { shown = (now, symbol) }
             }
         }
+        .onChange(of: browser.spaceID) { _, _ in name() }
+        // The name, beside the icon that stands for it, the moment you get
+        // there — right of it in the bar, over the first tabs (below, the
+        // page would cover it), above it at the column's foot — and
+        // gone again: the icon alone is what stays. Over whatever is there,
+        // taking no click and moving nothing.
+        .overlay(alignment: browser.prefs.sidebar ? .bottomLeading : .leading) {
+            if let named {
+                Text(named)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Palette.ground, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
+                    .offset(x: browser.prefs.sidebar ? 0 : SpaceDot.width + 4, y: browser.prefs.sidebar ? -30 : 0)
+                    .allowsHitTesting(false)
+                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: browser.prefs.sidebar ? .bottomLeading : .leading)))
+            }
+        }
         .animation(Motion.quick, value: hovering)
+        .animation(Motion.quick, value: named)
+    }
+
+    private func name() {
+        guard !browser.makingSpace else { return }
+        naming += 1
+        let turn = naming
+        named = browser.space.name
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            guard turn == naming else { return }
+            named = nil
+        }
     }
 }
 
@@ -403,7 +496,8 @@ enum SpaceMenu {
     }
 }
 
-/// The few questions a space's menu asks, as sheets on the window.
+/// The few questions a space's menu asks, as sheets on the window. The
+/// bookmarks list borrows `name` for Rename….
 @MainActor
 enum Ask {
     static func name(_ title: String, placeholder: String, initial: String = "", confirm: String, then: @escaping (String) -> Void) {
@@ -424,7 +518,7 @@ enum Ask {
 
     /// A new space's name, and whether it keeps the sign-ins the others
     /// have — for when the column isn't there to hold the card.
-    static func newSpace(then: @escaping (String, Bool) -> Void) {
+    static func newSpace(then: @escaping (String, Bool) -> Void, cancelled: @escaping () -> Void) {
         let alert = NSAlert()
         alert.messageText = "New Space"
         alert.informativeText = "Its own tabs. Signed in where your other spaces are, unless it starts afresh."
@@ -441,7 +535,8 @@ enum Ask {
         alert.window.initialFirstResponder = field
         show(alert) { ok in
             let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if ok, !name.isEmpty { then(name, fresh.state != .on) }
+            guard ok, !name.isEmpty else { cancelled(); return }
+            then(name, fresh.state != .on)
         }
     }
 
@@ -473,5 +568,13 @@ enum Ask {
             return
         }
         alert.beginSheetModal(for: window) { done($0 == .alertFirstButtonReturn) }
+    }
+}
+
+extension Browser {
+    /// A space deleted in another window: this window's row there goes.
+    func forget(space id: UUID) {
+        for tab in parked.removeValue(forKey: id)?.tabs ?? [] { tab.close() }
+        record.rows[id.uuidString] = nil
     }
 }

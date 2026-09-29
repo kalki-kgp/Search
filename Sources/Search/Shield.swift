@@ -66,8 +66,10 @@ final class Shield: ObservableObject {
     private static let rules = folder.appendingPathComponent("rules", isDirectory: true)
     private static let manifestFile = folder.appendingPathComponent("manifest.json")
 
-    /// The lists are a week old at most, as Brave's are.
-    private static let freshFor: TimeInterval = 7 * 24 * 60 * 60
+    /// A day old at most. YouTube changes its anti-adblock wall every few
+    /// days and uBlock's quick fixes answer it as often; a week-old set is
+    /// how the wall gets through.
+    private static let freshFor: TimeInterval = 24 * 60 * 60
     private static let catalog = URL(string: "https://raw.githubusercontent.com/brave/adblock-resources/master/filter_lists/list_catalog.json")!
 
     struct Manifest: Codable {
@@ -190,10 +192,12 @@ final class Shield: ObservableObject {
     /// the next document. Nothing for a site with none, or where blocking is
     /// off.
     func scripts(for host: String?) -> [WKUserScript] {
-        guard enabled, let host = host?.lowercased(), !host.isEmpty, !isPaused(on: host),
-              let sites, let site = sites.site(for: host)
-        else { return [] }
+        guard enabled, let host = host?.lowercased(), !host.isEmpty, !isPaused(on: host) else { return [] }
         var out: [WKUserScript] = []
+        if host == "www.youtube.com" {
+            out.append(WKUserScript(source: Shield.youtubeWall, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+        guard let sites, let site = sites.site(for: host) else { return out }
         if !site.calls.isEmpty {
             let library = site.deps.compactMap { sites.library($0) }.joined(separator: "\n")
             let host = Shield.jsString(host)
@@ -218,6 +222,91 @@ final class Shield: ObservableObject {
         }
         return out
     }
+
+    /// YouTube's newest wall comes back as `status: "ERROR"` with an
+    /// `enforcementMessageViewModel`, a shape uBlock's recovery script
+    /// doesn't recognise yet, so its retry never runs. This is that retry,
+    /// for that shape: tag the client the way uBlock does ("channel", then
+    /// the others), which its request-editing scriptlets turn into a request
+    /// YouTube answers, and load the video again. A tag that works is kept,
+    /// so the next video doesn't hit the wall at all.
+    ///
+    /// Woken only by YouTube's own page events and a few checks after each —
+    /// no observer over the page, nothing running while a video plays.
+    private static let youtubeWall = """
+    (function () {
+      if (window.__searchWall) return;
+      window.__searchWall = true;
+      var tags = ['channel', 'lactmilli', 'instream', 'yahi'], at = -1, base = null, tries = 0, timer = 0;
+      var root = document.documentElement, saved = null;
+      try { saved = localStorage.getItem('search.wall'); } catch (e) {}
+      // The tag that worked last time goes first.
+      if (tags.indexOf(saved) > 0) tags = [saved].concat(tags.filter(function (t) { return t !== saved; }));
+      // The wall is never drawn while this works on it; only YouTube's
+      // ad-block message is hidden, other errors still show. If every tag
+      // fails, search-wall on <html> lets the message through.
+      var css = document.createElement('style');
+      css.textContent =
+        'html:not([search-wall]) yt-playability-error-supported-renderers:has(ytd-enforcement-message-view-model){display:none!important}' +
+        'html:not([search-wall]) ytd-watch-flexy[player-unavailable]:has(ytd-enforcement-message-view-model) :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}';
+      root.appendChild(css);
+      function tag(c, i) {
+        if (base === null) base = c.userAgent;
+        at = i;
+        c.userAgent = base.replace(/Mozilla\\/5\\.0 \\([^)]+/, function (m) { return m + '; ' + tags[i]; });
+      }
+      function client() {
+        return window.ytcfg && ytcfg.data_ && ytcfg.data_.INNERTUBE_CONTEXT && ytcfg.data_.INNERTUBE_CONTEXT.client;
+      }
+      function walled(r) {
+        var s = r && r.playabilityStatus;
+        return !!(s && s.status !== 'OK' && s.errorScreen && s.errorScreen.enforcementMessageViewModel);
+      }
+      function clear() {
+        var f = document.querySelector('ytd-watch-flexy[player-unavailable]');
+        if (f) f.removeAttribute('player-unavailable');
+        var e = document.querySelector('yt-playability-error-supported-renderers');
+        if (e) e.hidden = true;
+      }
+      function check() {
+        timer = 0;
+        var p = document.getElementById('movie_player');
+        var r = p && p.getPlayerResponse && p.getPlayerResponse();
+        if (!r) { if (++tries < 8) timer = setTimeout(check, 500); return; }
+        if (!walled(r)) {
+          if (r.playabilityStatus && r.playabilityStatus.status === 'OK' && at >= 0) {
+            clear();
+            try { localStorage.setItem('search.wall', tags[at]); } catch (e) {}
+          }
+          return;
+        }
+        var c = client();
+        var id = (r.videoDetails && r.videoDetails.videoId) || new URLSearchParams(location.search).get('v');
+        var start = (r.playerConfig && r.playerConfig.playbackStartConfig && r.playerConfig.playbackStartConfig.startSeconds) || 0;
+        if (!c || !c.userAgent || !id || at + 1 >= tags.length) { root.setAttribute('search-wall', ''); return; }
+        tag(c, at + 1);
+        p.loadVideoById(id, start);
+        tries = 0;
+        timer = setTimeout(check, 1500);
+      }
+      function soon() {
+        var e = document.querySelector('yt-playability-error-supported-renderers');
+        if (e) e.hidden = false;
+        root.removeAttribute('search-wall');
+        tries = 0;
+        clearTimeout(timer);
+        timer = setTimeout(check, 400);
+      }
+      // Before the next video is asked for: ask with the tag that worked,
+      // so the answer never has the wall in it.
+      window.addEventListener('yt-navigate-start', function () {
+        var c = client();
+        if (c && c.userAgent && at < 0 && saved) tag(c, 0);
+      });
+      window.addEventListener('yt-navigate-finish', soon);
+      window.addEventListener('yt-page-data-updated', soon);
+    })();
+    """
 
     private static let procedural: String? = Bundle.main.url(forResource: "procedural", withExtension: "js")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
@@ -400,11 +489,33 @@ final class Shield: ObservableObject {
         "connect.facebook.net", "ads-twitter.com", "analytics.twitter.com",
     ]
 
+    /// The few slots that are reliably an advertisement and nothing else. Kept
+    /// deliberately short — a generous cosmetic list is how a blocker starts
+    /// eating the page it was meant to clean.
+    ///
+    /// The second half are the boxes a site keeps open for the ad while it
+    /// loads: with the ad blocked they stay, empty, a banner's height of
+    /// nothing (#159). Each is a whole class name from EasyList's generic
+    /// hiding list, matched as a whole word: an element whose class is
+    /// `ad-slot` goes, one whose class merely contains "ad" stays.
     private static let slots = [
         ".adsbygoogle", "ins.adsbygoogle", "[id^=\"google_ads_\"]",
         "[id^=\"div-gpt-ad\"]", "[id^=\"taboola-\"]", "#taboola-below-article",
         "iframe[src*=\"doubleclick.net\"]", "iframe[src*=\"googlesyndication\"]",
         "iframe[src*=\"amazon-adsystem\"]",
+        ".ad-slot", ".ad-slot-container", ".top-banner-ad-container",
+        ".ad-leaderboard", ".ad-billboard", ".ad-giga", ".ad-mpu", ".ad-mrec",
+        ".ad-unit", ".adunit", ".adslot", ".dfp-ad", ".gpt-ad", ".w_ad",
+    ]
+
+    /// Slots with names too plain, or too much a site's own, to hide
+    /// everywhere — AS and El País call theirs just `.ad` — hidden only on
+    /// the sites EasyList's own site rules hide them on.
+    private static let slotsBySite: [(sites: [String], selector: String)] = [
+        (["*as.com", "*elpais.com"], ".ad"),
+        (["*theguardian.com"], ".top-fronts-banner-ad-container"),
+        (["*independent.co.uk", "*the-independent.com"], "#billboard-wrapper"),
+        (["*cnn.com"], ".ad-slot-header__wrapper"),
     ]
 
     private func fallback() {
@@ -419,6 +530,13 @@ final class Shield: ObservableObject {
             "trigger": ["url-filter": ".*"],
             "action": ["type": "css-display-none", "selector": Shield.slots.joined(separator: ", ")],
         ])
+        rules += Shield.slotsBySite.map { entry in
+            [
+                "trigger": ["url-filter": ".*", "if-domain": entry.sites],
+                "action": ["type": "css-display-none", "selector": entry.selector],
+            ]
+        }
+
         guard let data = try? JSONSerialization.data(withJSONObject: rules),
               let json = String(data: data, encoding: .utf8),
               let store = WKContentRuleListStore.default()

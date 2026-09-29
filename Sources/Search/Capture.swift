@@ -54,10 +54,21 @@ final class CaptureRelay: NSObject, WKScriptMessageHandler {
       }
       if (geo) {
         var once = geo.getCurrentPosition, watch = geo.watchPosition, clear = geo.clearWatch;
+        // After Stop Using Location the page gets no more of it until it
+        // loads again: new asks are refused, answers still on the way dropped.
+        var stopped = false, round = 0;
+        function refuse(fail) {
+          if (typeof fail !== 'function') return;
+          setTimeout(function () {
+            fail({ code: 1, message: 'User denied Geolocation', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 });
+          }, 0);
+        }
         geo.getCurrentPosition = function (ok, fail, options) {
-          var done = false;
+          if (stopped) return refuse(fail);
+          var done = false, mine = round;
           function settle(f) {
             return function () {
+              if (mine !== round) return;
               if (!done) { done = true; asked--; tell(); }
               if (typeof f === 'function') return f.apply(this, arguments);
             };
@@ -66,6 +77,7 @@ final class CaptureRelay: NSObject, WKScriptMessageHandler {
           return once.call(geo, settle(ok), settle(fail), options);
         };
         geo.watchPosition = function (ok, fail, options) {
+          if (stopped) { refuse(fail); return 0; }
           var id = watch.call(geo, ok, function (e) {
             // Refused: the watch will never report, so it isn't one.
             if (e && e.code === 1 && watches[id]) { delete watches[id]; tell(); }
@@ -78,11 +90,21 @@ final class CaptureRelay: NSObject, WKScriptMessageHandler {
           clear.call(geo, id);
           if (watches[id]) { delete watches[id]; tell(); }
         };
-        // Stop Using Location, from the corner's menu.
+        // Stop Using Location, from the corner's menu: here, then passed down
+        // to the frames in this one, which may be the ones asking (a map).
         window.__officeStopLocation = function () {
+          stopped = true; round++;
           Object.keys(watches).forEach(function (id) { clear.call(geo, +id); });
-          watches = {}; tell();
+          watches = {}; asked = 0; tell();
+          for (var i = 0; i < window.frames.length; i++) {
+            try { window.frames[i].postMessage({ __officeStopLocation: 1 }, '*'); } catch (e) {}
+          }
         };
+        window.addEventListener('message', function (e) {
+          if (e.source === window.parent && e.source !== window && e.data && e.data.__officeStopLocation === 1) {
+            window.__officeStopLocation();
+          }
+        });
       }
       if (!md) return;
       function keep(stream, screen) {
@@ -283,9 +305,9 @@ enum CaptureMenu {
                 })
             }
         }
-        if let host = browser.active?.address?.host(), !host.isEmpty {
+        if let url = browser.active?.address, let scheme = url.scheme, let host = url.host(), !host.isEmpty {
             menu.addItem(.separator())
-            site(host, into: menu)
+            site(host, origin: Browser.origin(scheme, host, url.port ?? 0), into: menu)
         }
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         actions = []
@@ -298,16 +320,15 @@ enum CaptureMenu {
     }
 
     /// What the site in front has been allowed or refused, each one open to
-    /// change: the choice is kept under capture.<host>|<WKMediaCaptureType>
-    /// and location.<host>, the same keys the question at the top of the
-    /// page writes.
-    private static func site(_ host: String, into menu: NSMenu) {
+    /// change: the choice is kept under capture.<origin>|<kind>, the same
+    /// keys the question at the top of the page writes (see Browser).
+    private static func site(_ host: String, origin: String, into menu: NSMenu) {
         menu.addItem(heading(host))
         let kinds: [(String, String, String)] = [
-            ("capture.\(host)|\(WKMediaCaptureType.camera.rawValue)", "Camera", "video"),
-            ("capture.\(host)|\(WKMediaCaptureType.microphone.rawValue)", "Microphone", "mic"),
-            ("capture.\(host)|\(WKMediaCaptureType.cameraAndMicrophone.rawValue)", "Camera and Microphone", "video.badge.waveform"),
-            ("location.\(host)", "Location", "location"),
+            ("capture.\(origin)|\(WKMediaCaptureType.camera.rawValue)", "Camera", "video"),
+            ("capture.\(origin)|\(WKMediaCaptureType.microphone.rawValue)", "Microphone", "mic"),
+            ("capture.\(origin)|\(WKMediaCaptureType.cameraAndMicrophone.rawValue)", "Camera and Microphone", "video.badge.waveform"),
+            ("capture.\(origin)|location", "Location", "location"),
         ]
         for (key, name, symbol) in kinds {
             // The pair is only asked for together; it gets a row once it has been.

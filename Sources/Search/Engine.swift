@@ -1,7 +1,7 @@
 import Foundation
 
 enum Engine: String, CaseIterable, Identifiable {
-    case google, duckduckgo, bing, ecosia, startpage, kagi, custom
+    case google, duckduckgo, bing, ecosia, startpage, kagi, brave, qwant, custom
 
     static let standard = Engine.google
 
@@ -15,6 +15,8 @@ enum Engine: String, CaseIterable, Identifiable {
         case .ecosia: return "Ecosia"
         case .startpage: return "Startpage"
         case .kagi: return "Kagi"
+        case .brave: return "Brave Search"
+        case .qwant: return "Qwant"
         case .custom: return "Custom"
         }
     }
@@ -27,6 +29,8 @@ enum Engine: String, CaseIterable, Identifiable {
         case .ecosia: return "https://www.ecosia.org/search?q=%s"
         case .startpage: return "https://www.startpage.com/sp/search?query=%s"
         case .kagi: return "https://kagi.com/search?q=%s"
+        case .brave: return "https://search.brave.com/search?q=%s"
+        case .qwant: return "https://www.qwant.com/?q=%s"
         case .custom:
             let trimmed = custom.trimmingCharacters(in: .whitespacesAndNewlines)
             return Engine.accepts(trimmed) ? trimmed : Engine.standard.template(custom: "")
@@ -35,12 +39,18 @@ enum Engine: String, CaseIterable, Identifiable {
 
     func name(custom: String) -> String {
         guard self == .custom else { return title }
-        guard let host = Engine.host(of: custom) else { return Engine.standard.title }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        return Engine.bareHost(of: custom) ?? Engine.standard.title
     }
 
     static func accepts(_ template: String) -> Bool {
         host(of: template) != nil
+    }
+
+    /// A template's host, with any leading "www." dropped — what a person
+    /// would call the site if you asked them.
+    static func bareHost(of template: String) -> String? {
+        guard let host = host(of: template) else { return nil }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 
     static func url(for text: String, template: String) -> URL? {

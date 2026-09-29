@@ -33,12 +33,17 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
             case "settled":
                 tab?.settleSignIn(navigated: false)
             case "focus":
-                tab?.typing = body["typing"] as? Bool ?? false
+                // Set only when it changes: every assignment to a published
+                // value redraws whatever watches the tab, same value or not.
+                let typing = body["typing"] as? Bool ?? false
+                if tab?.typing != typing { tab?.typing = typing }
                 // Which sign-in box the caret is in, and where it sits on the
                 // page — so a list of accounts can hang from it.
+                // A box of a name and password, or one the page marks for
+                // passkeys alone ("webauthn"), which takes no password.
                 if let rect = body["rect"] as? [String: Double],
                    let x = rect["x"], let y = rect["y"], let w = rect["w"], let h = rect["h"] {
-                    tab?.fieldFocused(CGRect(x: x, y: y, width: w, height: h))
+                    tab?.fieldFocused(CGRect(x: x, y: y, width: w, height: h), passwords: body["passwords"] as? Bool ?? true)
                 } else {
                     tab?.fieldFocused(nil)
                 }
@@ -50,18 +55,14 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         }
     }
 
-    /// Whether to keep claiming passkeys are possible here.
+    /// Whether sites are offered passkeys here (Settings › Passwords).
     ///
-    /// They are not, and it isn't a matter of code: Apple gates Touch ID and
-    /// iCloud passkeys inside a third-party WKWebView behind a managed
-    /// entitlement, and the cross-device route over Bluetooth behind the same
-    /// one. Measured on this machine, WebKit answers
-    /// isUserVerifyingPlatformAuthenticatorAvailable() with false.
-    ///
-    /// Meanwhile the API object exists, so sites feature-detect it, offer the
-    /// passkey path, and strand you there. Taking the object away is what sends
-    /// them straight to the password — the one that works. Turn this back on
-    /// from Settings the day the app is signed with the entitlement.
+    /// A build without Apple's browser entitlement can't do them: WebKit then
+    /// answers isUserVerifyingPlatformAuthenticatorAvailable() with false,
+    /// yet the API object exists, so sites offer the passkey path and strand
+    /// you there. Taken away, they go straight to the password. Signed with
+    /// the entitlement, as releases are, this is on, and Search carries out
+    /// the sites' requests itself (see Passkeys.swift).
     static var passkeysOffered: Bool {
         get { Store.settings.bool(forKey: "passkeys") }
         set { Store.settings.set(newValue, forKey: "passkeys") }
@@ -69,15 +70,60 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
 
     /// Only the passkey object goes. navigator.credentials itself stays: sites
     /// use it for stored passwords too, and that half still works.
+    ///
+    /// Unless an extension answers passkey requests itself — a password
+    /// manager with your passkeys in it, as 1Password is. It puts its own get
+    /// and create on navigator.credentials, and reaches for the passkey object
+    /// from its own script as it does; from then on sites see the object, and
+    /// the extension is the one they ask. Whatever it leaves to the browser is
+    /// refused at once, as if you had said no, where WebKit would try and fail.
     static let withoutPasskeys = """
     (function () {
+      var real = window.PublicKeyCredential;
+      if (!real) return;
+      var claimed = false;
+      function answered() {
+        if (claimed) return true;
+        try {
+          if (navigator.credentials && Object.getOwnPropertyDescriptor(navigator.credentials, 'get')) claimed = true;
+          else if ((new Error().stack || '').indexOf('-extension://') >= 0) claimed = true;
+        } catch (e) {}
+        return claimed;
+      }
       try {
         Object.defineProperty(window, 'PublicKeyCredential', {
-          value: undefined, configurable: true, writable: true
+          configurable: true,
+          get: function () { return answered() ? real : undefined; },
+          set: function (value) { real = value; }
         });
       } catch (e) {
         try { delete window.PublicKeyCredential; } catch (ignored) {}
+        return;
       }
+      var proto = CredentialsContainer.prototype;
+      ['get', 'create'].forEach(function (name) {
+        var native = proto[name];
+        try {
+          Object.defineProperty(proto, name, {
+            configurable: true, writable: true,
+            value: function (options) {
+              if (!options || !options.publicKey) return native.apply(this, arguments);
+              var signal = options.signal;
+              // Under the name field: nothing to offer, so it waits, as it
+              // would while nobody picks one, until the page lets it go.
+              if (name === 'get' && options.mediation === 'conditional') {
+                return new Promise(function (resolve, reject) {
+                  if (!signal) return;
+                  var aborted = function () { return signal.reason || new DOMException('The operation was aborted.', 'AbortError'); };
+                  if (signal.aborted) return reject(aborted());
+                  signal.addEventListener('abort', function () { reject(aborted()); }, { once: true });
+                });
+              }
+              return Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'));
+            }
+          });
+        } catch (e) {}
+      });
     })();
     """
 
@@ -202,8 +248,15 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       setTimeout(tell, 2200);
       // The boxes going away without a new page — a sign-in done in place —
       // is the other way a sign-in shows it took.
-      var settling = null;
-      new MutationObserver(function () {
+      //
+      // Looked at a quarter of a second after the page changes, not at every
+      // change: a chat writing out its answer changes the page on every word,
+      // and looking for the boxes each time — through the whole page — made
+      // a long conversation slower with every word it wrote (3,000 words:
+      // 0.3 s without this, up to 3.7 s with it, and climbing).
+      var settling = null, looking = null;
+      function look() {
+        looking = null;
         if (!told) { tell(); return; }
         if (pair()) return;
         told = false;
@@ -212,6 +265,9 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
           if (pair()) return;
           window.webkit.messageHandlers.officeForms.postMessage({ kind: 'settled' });
         }, 400);
+      }
+      new MutationObserver(function () {
+        if (!looking) looking = setTimeout(look, 250);
       }).observe(document.documentElement, { childList: true, subtree: true });
 
       // Whether the caret is somewhere on the page that takes typing.
@@ -224,34 +280,59 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         var tag = (el.tagName || '').toLowerCase();
         if (tag === 'textarea') return true;
         if (el.isContentEditable === true) return true;
+        if (el.getAttribute && el.getAttribute('role') === 'textbox') return true;
+        // A document that types into a frame of its own — Google Docs keeps
+        // the caret there. ⌘⇧V is that document's paste, so the frame counts.
+        if (tag === 'iframe') {
+          try { return editable(el.contentDocument && el.contentDocument.activeElement); }
+          catch (e) { return false; }
+        }
         if (tag !== 'input') return false;
         var kind = (el.type || 'text').toLowerCase();
         return ['text', 'search', 'email', 'url', 'tel', 'password', 'number',
                 'date', 'datetime-local', 'month', 'week', 'time'].indexOf(kind) >= 0;
       }
 
-      function caret() {
+      // What was last said, so a scroll can keep quiet when nothing moved
+      // that anyone is listening for.
+      var said = null;
+      // A box the page says takes a passkey: autocomplete="username webauthn".
+      function forPasskeys(el) {
+        return !!(el && (el.tagName || '').toLowerCase() === 'input' &&
+          /(^|\\s)webauthn(\\s|$)/i.test(el.getAttribute('autocomplete') || ''));
+      }
+      function caret(scrolled) {
         var el = document.activeElement;
-        var both = pair();
+        // The boxes are only looked for with the caret in one: this runs on
+        // every frame of every scroll, and looking goes through the whole page.
+        var both = el && (el.tagName || '').toLowerCase() === 'input' ? pair() : null;
         var rect = null;
-        if (both && el && (el === both.user || el === both.pass)) {
+        var passwords = !!(both && el && (el === both.user || el === both.pass));
+        if (passwords || forPasskeys(el)) {
           var r = el.getBoundingClientRect();
           if (r.width > 0 && r.height > 0) rect = { x: r.left, y: r.top, w: r.width, h: r.height };
         }
+        var typing = editable(el);
+        var now = typing + (rect ? ' ' + passwords + ' ' + rect.x + ' ' + rect.y + ' ' + rect.w + ' ' + rect.h : '');
+        if (scrolled === true && now === said) return;
+        said = now;
         window.webkit.messageHandlers.officeForms.postMessage({
           kind: 'focus',
-          typing: editable(el),
-          rect: rect
+          typing: typing,
+          rect: rect,
+          passwords: passwords
         });
       }
 
       // The box moves when the page scrolls or the window changes size, and
-      // whatever hangs from it has to move too. Once a frame at most.
+      // whatever hangs from it has to move too. Once a frame at most, and
+      // only when something did change: with the caret nowhere near a sign-in,
+      // every frame of every scroll used to send the same answer again.
       var moving = false;
       function moved() {
         if (moving) return;
         moving = true;
-        requestAnimationFrame(function () { moving = false; caret(); });
+        requestAnimationFrame(function () { moving = false; caret(true); });
       }
       window.addEventListener('scroll', moved, true);
       window.addEventListener('resize', moved);

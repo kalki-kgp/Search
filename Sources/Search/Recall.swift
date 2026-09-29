@@ -44,7 +44,10 @@ struct HistoryPanel: View {
 
     @FocusState private var hunting: Bool
     @State private var traces: [History.Trace] = []
-    @State private var clearing = false
+    /// The list as drawn: each day's name, then its pages. Worked out when
+    /// the history or the search changes, not each time the panel is drawn.
+    @State private var lines: [Listed] = []
+    private var clearing: Bool { browser.recallMode == .clearing }
 
     var body: some View {
         Plate("History", width: 600, close: { browser.recalling = false }) {
@@ -54,27 +57,45 @@ struct HistoryPanel: View {
                 if traces.isEmpty {
                     Card { Nothing(browser.recallHunt.isEmpty ? "Nothing yet." : "Nothing matches.") }
                 } else {
+                    // Lazy: only the lines in view are made. Two thousand of
+                    // them, each with its icon, took the panel a third of a
+                    // second to open, and scrolling redrew them all.
                     ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(days, id: \.0) { day, rows in
-                                VStack(alignment: .leading, spacing: 6) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(lines) { line in
+                                switch line.kind {
+                                case .day(let day):
                                     Caption(day)
-                                    Card {
-                                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, trace in
-                                            if index > 0 { Rule() }
-                                            Row(
-                                                trace: trace,
-                                                go: {
-                                                    browser.recalling = false
-                                                    browser.active?.go(to: trace.url)
-                                                },
-                                                forget: {
-                                                    browser.history.forget(trace.key)
-                                                    refresh()
-                                                }
-                                            )
-                                        }
+                                        .padding(.top, line.id == lines.first?.id ? 0 : 14)
+                                        .padding(.bottom, 6)
+                                case .trace(let trace, let first, let last):
+                                    VStack(spacing: 0) {
+                                        if !first { Rule() }
+                                        Row(
+                                            trace: trace,
+                                            go: {
+                                                browser.recalling = false
+                                                browser.active?.go(to: trace.url)
+                                            },
+                                            forget: {
+                                                browser.history.forget(trace.key)
+                                                refresh()
+                                            }
+                                        )
                                     }
+                                    // A day's card, drawn a line at a time.
+                                    .background(Palette.ground)
+                                    .clipShape(Slice(first: first, last: last))
+                                    // The card's outline, reaching a point past the lines it
+                                    // shares with its neighbours and cut to its own: only
+                                    // its sides, and its rounded top or bottom, remain.
+                                    .overlay(
+                                        Slice(first: first, last: last)
+                                            .strokeBorder(Palette.hairline, lineWidth: 1)
+                                            .padding(.top, first ? 0 : -1)
+                                            .padding(.bottom, last ? 0 : -1)
+                                            .clipped()
+                                    )
                                 }
                             }
                         }
@@ -92,7 +113,7 @@ struct HistoryPanel: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Palette.muted)
                     Spacer()
-                    Pill("Clear…") { withAnimation(Motion.settle) { clearing = true } }
+                    Pill("Clear…") { withAnimation(Motion.settle) { browser.recallMode = .clearing } }
                 }
             }
         }
@@ -113,7 +134,7 @@ struct HistoryPanel: View {
                     Pill("Clear") {
                         browser.clearHistory()
                         refresh()
-                        withAnimation(Motion.settle) { clearing = false }
+                        withAnimation(Motion.settle) { browser.recallMode = .history }
                     }
                 }
                 Rule()
@@ -127,22 +148,56 @@ struct HistoryPanel: View {
             }
             HStack {
                 Spacer()
-                Pill("Back") { withAnimation(Motion.settle) { clearing = false } }
+                Pill("Back") { withAnimation(Motion.settle) { browser.recallMode = .history } }
             }
         }
         .transition(.opacity)
     }
 
-    private var days: [(String, [History.Trace])] {
-        let calendar = Calendar.current
-        let grouped = Dictionary(grouping: traces) { calendar.startOfDay(for: $0.last) }
-        return grouped.keys.sorted(by: >).map { day in
-            (When.day(day), grouped[day]!.sorted { $0.last > $1.last })
-        }
-    }
-
     private func refresh() {
         traces = browser.history.everything(matching: browser.recallHunt)
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: traces) { calendar.startOfDay(for: $0.last) }
+        var made: [Listed] = []
+        for day in grouped.keys.sorted(by: >) {
+            let rows = grouped[day]!.sorted { $0.last > $1.last }
+            made.append(Listed(id: "day " + day.description, kind: .day(When.day(day))))
+            for (index, trace) in rows.enumerated() {
+                made.append(Listed(id: trace.id, kind: .trace(trace, first: index == 0, last: index == rows.count - 1)))
+            }
+        }
+        lines = made
+    }
+
+    /// One line of the list: a day's name, or a page under it.
+    struct Listed: Identifiable {
+        enum Kind {
+            case day(String)
+            case trace(History.Trace, first: Bool, last: Bool)
+        }
+        let id: String
+        let kind: Kind
+    }
+
+    /// A slice of a card: rounded at the top on its first line and at the
+    /// bottom on its last, as the whole card would be.
+    struct Slice: InsettableShape {
+        let first: Bool
+        let last: Bool
+        var inset: CGFloat = 0
+
+        func path(in rect: CGRect) -> Path {
+            let radius: CGFloat = 11 - inset
+            let top = first ? radius : 0, bottom = last ? radius : 0
+            return UnevenRoundedRectangle(topLeadingRadius: top, bottomLeadingRadius: bottom, bottomTrailingRadius: bottom, topTrailingRadius: top, style: .continuous)
+                .path(in: rect.insetBy(dx: inset, dy: inset))
+        }
+
+        func inset(by amount: CGFloat) -> Slice {
+            var copy = self
+            copy.inset += amount
+            return copy
+        }
     }
 
     /// One line. A title, where it came from, and when — the three things you
@@ -156,14 +211,14 @@ struct HistoryPanel: View {
 
         var body: some View {
             HStack(spacing: 12) {
-                Mark(icon: Favicons.shared.cached(trace.url.host()?.lowercased() ?? ""),
-                     letter: trace.key.first.map { String($0).uppercased() } ?? "•", size: 16)
+                Mark(icon: Favicons.shared.cached(Favicons.site(trace.url) ?? ""),
+                     letter: trace.address.first.map { String($0).uppercased() } ?? "•", size: 16)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(trace.title.isEmpty ? trace.key : trace.title)
+                    Text(trace.title.isEmpty ? Address.withoutWWW(trace.address) : trace.title)
                         .font(.system(size: 13))
                         .foregroundStyle(Palette.ink)
                         .lineLimit(1)
-                    Text(trace.key)
+                    Text(Address.withoutWWW(trace.address))
                         .font(.system(size: 11.5))
                         .foregroundStyle(Palette.muted)
                         .lineLimit(1)
@@ -193,22 +248,54 @@ struct HistoryPanel: View {
 struct DownloadsPanel: View {
     @ObservedObject var browser: Browser
     @ObservedObject var loot: Loot
+    @ObservedObject var fetches: Fetches
+
+    init(browser: Browser, loot: Loot) {
+        self.browser = browser
+        self.loot = loot
+        self.fetches = browser.fetches
+    }
 
     var body: some View {
         Plate("Downloads", width: 560, close: { browser.hoarding = false }) {
-            if loot.kept.isEmpty {
+            if fetches.entries.isEmpty && loot.kept.isEmpty {
                 Card { Nothing("Nothing downloaded yet.") }
             } else {
                 ScrollView(showsIndicators: false) {
-                    Card {
-                        ForEach(Array(loot.kept.enumerated()), id: \.element.id) { index, keep in
-                            if index > 0 { Rule() }
-                            Row(
-                                keep: keep,
-                                open: { loot.open(keep) },
-                                reveal: { loot.reveal(keep) },
-                                forget: { loot.forget(keep) }
-                            )
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if !fetches.entries.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Caption("Current downloads")
+                                Card {
+                                    ForEach(Array(fetches.entries.enumerated()), id: \.element.id) { index, entry in
+                                        if index > 0 { Rule() }
+                                        FetchRow(
+                                            entry: entry,
+                                            pause: { browser.pauseDownload(entry) },
+                                            resume: { browser.resumeDownload(entry) },
+                                            retry: { browser.retryDownload(entry) },
+                                            cancel: { browser.cancelDownload(entry) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if !loot.kept.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Caption("Completed")
+                                Card {
+                                    ForEach(Array(loot.kept.enumerated()), id: \.element.id) { index, keep in
+                                        if index > 0 { Rule() }
+                                        KeptRow(
+                                            keep: keep,
+                                            open: { loot.open(keep) },
+                                            reveal: { loot.reveal(keep) },
+                                            forget: { loot.forget(keep) }
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                     .padding(.bottom, 2)
@@ -229,7 +316,129 @@ struct DownloadsPanel: View {
         }
     }
 
-    private struct Row: View {
+    private struct FetchRow: View {
+        @ObservedObject var entry: FetchEntry
+        let pause: () -> Void
+        let resume: () -> Void
+        let retry: () -> Void
+        let cancel: () -> Void
+
+        private var bytes: String {
+            let received = ByteCountFormatter.string(fromByteCount: entry.completedBytes, countStyle: .file)
+            guard entry.totalBytes > 0 else { return received + " downloaded" }
+            let total = ByteCountFormatter.string(fromByteCount: entry.totalBytes, countStyle: .file)
+            return "\(received) of \(total)"
+        }
+
+        private var stateLabel: String {
+            switch entry.state {
+            case .downloading: return "Downloading"
+            case .pausing: return "Pausing…"
+            case .paused: return "Paused"
+            case .resuming: return "Resuming…"
+            case .failed: return "Failed"
+            }
+        }
+
+        private var icon: String {
+            switch entry.state {
+            case .downloading, .pausing, .resuming: return "arrow.down.circle"
+            case .paused: return "pause.circle"
+            case .failed: return "exclamationmark.circle"
+            }
+        }
+
+        var body: some View {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(Palette.muted)
+                    .frame(width: 18)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(entry.name)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Palette.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    HStack(spacing: 7) {
+                        if let fraction = entry.fraction {
+                            // Grey, as the ring in the chrome is.
+                            Capsule()
+                                .fill(Palette.hairline)
+                                .overlay(alignment: .leading) {
+                                    Capsule()
+                                        .fill(Palette.ink.opacity(0.6))
+                                        .frame(width: 68 * min(1, max(0, fraction)))
+                                }
+                                .frame(width: 68, height: 3)
+                        }
+                        Text("\(stateLabel) · \(bytes)")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Palette.muted)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    if case .failed = entry.state {
+                        Text(entry.errorDescription ?? "The download failed.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer(minLength: 4)
+                controls
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+        }
+
+        @ViewBuilder
+        private var controls: some View {
+            switch entry.state {
+            case .downloading:
+                HStack(spacing: 4) {
+                    if entry.canPause { Quick("Pause", act: pause) }
+                    Quick("Cancel", act: cancel)
+                }
+            case .pausing:
+                HStack(spacing: 4) {
+                    Quick("Pausing…", act: {})
+                        .disabled(true)
+                    Quick("Cancel", act: cancel)
+                }
+            case .paused:
+                HStack(spacing: 4) {
+                    if entry.canResume {
+                        Quick("Resume", act: resume)
+                    } else if entry.canRetry {
+                        Quick("Retry", act: retry)
+                            .help("Start the download again from the beginning")
+                    }
+                    Quick("Remove", act: cancel)
+                }
+            case .resuming:
+                HStack(spacing: 4) {
+                    Quick("Resuming…", act: {})
+                        .disabled(true)
+                    Quick("Cancel", act: cancel)
+                }
+            case .failed:
+                HStack(spacing: 4) {
+                    if entry.canResume { Quick("Resume", act: resume) }
+                    if entry.canRetry {
+                        Quick("Retry", act: retry)
+                            .help("Start the download again from the beginning")
+                    }
+                    Quick("Remove", act: cancel)
+                }
+            }
+        }
+    }
+
+    private struct KeptRow: View {
         let keep: Keep
         let open: () -> Void
         let reveal: () -> Void

@@ -39,18 +39,63 @@ final class Float {
 
     var showing: Bool { panel != nil }
 
+    /// Where a test run's bench opens the window instead: off every screen,
+    /// at the size it would have had, and not remembered (see `film float`
+    /// in Bench.swift). Nil everywhere else.
+    static var benchAway: NSPoint?
+
+    /// Two fingers flick the window to a corner instead of pushing it
+    /// along (Settings › General). Off unless asked for.
+    static var flicks = false
+
+    /// Where a flick sends the window, a margin in from the edges of
+    /// `area`. A swipe clearly both ways — between about 22° and 68° — takes
+    /// it to the corner it points at; a straighter one along its stronger
+    /// direction, against whichever of the other two edges it is nearer.
+    nonisolated static func corner(for frame: NSRect, in area: NSRect, toward way: CGVector, margin: CGFloat = 12) -> NSPoint {
+        let left = area.minX + margin, right = area.maxX - margin - frame.width
+        let bottom = area.minY + margin, top = area.maxY - margin - frame.height
+        let across = abs(way.dx), up = abs(way.dy)
+        let x = way.dx > 0 ? right : left, y = way.dy > 0 ? top : bottom
+        if min(across, up) >= 0.4 * max(across, up) { return NSPoint(x: x, y: y) }
+        if across >= up { return NSPoint(x: x, y: frame.midY > area.midY ? top : bottom) }
+        return NSPoint(x: frame.midX > area.midX ? right : left, y: y)
+    }
+
+    /// Where docking leaves the window: off the side of `area`, but for a
+    /// sliver to bring it back by.
+    nonisolated static func docked(_ frame: NSRect, right: Bool, in area: NSRect, sliver: CGFloat = 10) -> NSPoint {
+        NSPoint(x: right ? area.maxX - sliver : area.minX - frame.width + sliver, y: frame.minY)
+    }
+
+    /// Whether the window can go into that side of `area`, one of `screens`:
+    /// not where another screen carries on, where it would only slide onto
+    /// that one instead.
+    nonisolated static func dockable(_ frame: NSRect, right: Bool, in area: NSRect, screens: [NSRect]) -> Bool {
+        let beyond = NSRect(x: right ? area.maxX : area.minX - frame.width, y: frame.minY, width: frame.width, height: frame.height)
+        return !screens.contains { !$0.contains(area) && $0.intersects(beyond) }
+    }
+
+    /// Screens a test run's bench makes up, far off the real ones, for the
+    /// window to flick and dock about (see `float` in Bench.swift). Nil
+    /// everywhere else.
+    static var benchScreens: [NSRect]?
+
     func lift(_ page: NSView) {
         guard panel == nil else { return }
         self.page = page
 
         let size = NSSize(width: 440, height: 247)
         let screen = NSScreen.main?.visibleFrame ?? .zero
-        let spot = NSRect(
+        // Where it was last, at the size it was, if a screen still shows it;
+        // otherwise the bottom right of this one.
+        var spot = Float.remembered ?? NSRect(
             x: screen.maxX - size.width - 24,
             y: screen.minY + 24,
             width: size.width,
             height: size.height
         )
+        if let away = Float.benchAway { spot.origin = away }
 
         let panel = Panel(
             contentRect: spot,
@@ -72,10 +117,30 @@ final class Float {
         // playing in the tab.
         panel.hasShadow = false
         panel.isReleasedWhenClosed = false
+        // The bench's, off every screen, is left out when a probe is hidden.
+        panel.canHide = Float.benchAway == nil
         panel.aspectRatio = size
+        // Kept once a move or a resize is over, not on each step of one: at
+        // the end of a resize by its edges, as it closes (see drop), and as
+        // the app quits with it open, which closes nothing.
+        let keep: (Notification.Name, AnyObject) -> NSObjectProtocol = { name, object in
+            NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if let frame = self?.restingFrame { Float.remembered = frame }
+                }
+            }
+        }
+        keeping = [
+            keep(NSWindow.didEndLiveResizeNotification, panel),
+            keep(NSApplication.willTerminateNotification, NSApp),
+        ]
         panel.minSize = NSSize(width: 260, height: 146)
 
-        let ground = NSView(frame: NSRect(origin: .zero, size: size))
+        // At the size the window opens at. Built at the default size and
+        // then stretched to a remembered one, the page was laid out twice,
+        // and the first frames of video filled only part of the window
+        // (#257).
+        let ground = NSView(frame: NSRect(origin: .zero, size: spot.size))
         ground.wantsLayer = true
         ground.layer?.backgroundColor = NSColor.black.cgColor
         ground.layer?.cornerRadius = 14
@@ -131,10 +196,41 @@ final class Float {
         }
     }
 
+    /// The window's last place and size, kept across closing it and quitting,
+    /// and given back only while a screen still shows most of it.
+    private static var remembered: NSRect? {
+        get {
+            guard let text = Store.settings.string(forKey: "float.frame") else { return nil }
+            let frame = NSRectFromString(text)
+            let shown = NSScreen.screens.contains {
+                let seen = $0.visibleFrame.intersection(frame)
+                return seen.width * seen.height > 0.6 * frame.width * frame.height
+            }
+            return frame.width > 100 && shown ? frame : nil
+        }
+        set {
+            guard benchAway == nil else { return }
+            Store.settings.set(newValue.map(NSStringFromRect), forKey: "float.frame")
+        }
+    }
+
+    private var keeping: [NSObjectProtocol] = []
+
+    /// Where the window is, or was before it was docked at a side: a docked
+    /// window is kept as it was, not as the sliver it is.
+    private var restingFrame: NSRect? {
+        guard let panel else { return nil }
+        guard let home = controls?.dockedFrom else { return panel.frame }
+        return NSRect(origin: home, size: panel.frame.size)
+    }
+
     /// Puts the page down and closes. Whoever owns the page takes it back on
     /// their next layout.
     func drop() {
         guard let panel else { return }
+        if let frame = restingFrame { Float.remembered = frame }
+        keeping.forEach(NotificationCenter.default.removeObserver)
+        keeping = []
         ticker?.invalidate()
         ticker = nil
         (page as? WKWebView)?.allowsMagnification = true
@@ -279,6 +375,8 @@ final class Float {
             CATransaction.commit()
         }
 
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
         /// Everything reaches this layer.
         ///
         /// isMovableByWindowBackground never worked here: the window's whole
@@ -313,13 +411,21 @@ final class Float {
 
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
+            // A click on the sliver of a docked window brings it back.
+            if docked != nil {
+                undock()
+                ignoringDrag = true
+                return
+            }
+            ignoringDrag = false
+            stopGlide()
             grab = NSEvent.mouseLocation
             origin = window.frame
             stretching = atCorner(convert(event.locationInWindow, from: nil))
         }
 
         override func mouseDragged(with event: NSEvent) {
-            guard let window else { return }
+            guard let window, !ignoringDrag else { return }
             let now = NSEvent.mouseLocation
             let dx = now.x - grab.x
             let dy = now.y - grab.y
@@ -344,6 +450,9 @@ final class Float {
             // Only while fingers are actually down. Letting the glide continue
             // would fling the pointer across the screen after them.
             guard event.momentumPhase == [] else { return }
+            if Float.flicks { return flickWheel(with: event) }
+            // Docked, and flicks turned off since: out first, where it was.
+            if docked != nil { return undock() }
 
             let dx = event.scrollingDeltaX
             let dy = event.scrollingDeltaY
@@ -365,6 +474,246 @@ final class Float {
             // Without this the pointer and the physical trackpad stay parted
             // for a moment, and the next flick arrives from the wrong place.
             CGAssociateMouseAndMouseCursorPosition(1)
+        }
+
+        /// Two fingers flick the window to a corner, as in Dia and Arc: a
+        /// swipe up takes it to the top on the side it is on, a swipe left to
+        /// the left at the height it is at, a diagonal one to that corner —
+        /// one move a swipe, however long the swipe. Dragging it anywhere is
+        /// still the click's.
+        private var swipe: CGVector = .zero
+        private var flicked = false
+        /// For a wheel, which has no gesture to belong to: one flick a turn.
+        private var lastWheelFlick = Date.distantPast
+
+        private func flickWheel(with event: NSEvent) {
+            // Which way the fingers went, on screen: with natural scrolling
+            // the deltas run with the fingers, without it against them.
+            let sign: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
+            let step = CGVector(dx: sign * event.scrollingDeltaX, dy: -sign * event.scrollingDeltaY)
+
+            if event.phase == [] {
+                // A mouse's wheel: every turn is a flick, a moment apart.
+                guard Date().timeIntervalSince(lastWheelFlick) > 0.4, step != .zero else { return }
+                lastWheelFlick = Date()
+                if docked != nil {
+                    if inward(step) { undock() }
+                } else if let side = against(), outward(step, from: side) {
+                    dock(side)
+                } else {
+                    flick(step)
+                }
+                return
+            }
+            if event.phase.contains(.began) {
+                swipe = .zero
+                flicked = false
+                pulling = nil
+                pullFrom = window?.frame.origin ?? .zero
+            }
+            swipe.dx += step.dx
+            swipe.dy += step.dy
+            let lifted = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+
+            // Docked: a swipe back towards the middle brings it out.
+            if docked != nil {
+                if !flicked, inward(swipe), abs(swipe.dx) > 24 || lifted {
+                    flicked = true
+                    undock()
+                }
+                if lifted {
+                    swipe = .zero
+                    flicked = false
+                }
+                return
+            }
+
+            // Against a side, and swiped at it: it gives, heavily, under the
+            // fingers, and on lifting either goes into the side — only a
+            // sliver left — or springs back out.
+            if pulling == nil, !flicked, let side = against(), outward(swipe, from: side), abs(swipe.dx) > 6 {
+                pulling = side
+                // A spring still settling from the last one would pull the
+                // other way, a frame at a time.
+                stopGlide()
+            }
+            if pulling != nil {
+                window?.setFrameOrigin(NSPoint(x: pullFrom.x + swipe.dx * Controls.give, y: pullFrom.y))
+                // The window moves out from under the pointer as it gives, and
+                // the fingers lifting can then be told to whatever is under
+                // it instead: if nothing more comes, the pull is over anyway.
+                settling?.cancel()
+                let settle = DispatchWorkItem { [weak self] in self?.letGo() }
+                settling = settle
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: settle)
+                if lifted { letGo() }
+                return
+            }
+            // Read from the whole swipe, as the fingers lift: a swipe often
+            // sets off along one side before it turns diagonal, and read
+            // early it went the wrong way. A long one doesn't wait.
+            let length = hypot(swipe.dx, swipe.dy)
+            if !flicked, length > 120 || (lifted && length > 20) {
+                flicked = true
+                flick(swipe)
+            }
+            if lifted {
+                swipe = .zero
+                flicked = false
+            }
+        }
+
+        // Docking at a side, as in Dia: a strong swipe at the side the window
+        // is against slides it off, leaving a sliver to bring it back by.
+        enum Side { case left, right }
+        private(set) var docked: Side?
+        /// Where it was before it docked: where it goes back to.
+        private(set) var dockedFrom: NSPoint?
+        private var pulling: Side?
+        private var pullFrom: NSPoint = .zero
+        private var ignoringDrag = false
+        /// How much of it stays on screen, docked.
+        static let sliver: CGFloat = 10
+        /// How far the fingers go at the side before letting go docks it.
+        static let dockAt: CGFloat = 90
+        /// How much the window gives under the fingers while pulled at a side.
+        static let give: CGFloat = 0.35
+
+        /// The usable part of the screen the window is on.
+        private var area: NSRect? {
+            if let made = Float.benchScreens, let window {
+                let middle = NSPoint(x: window.frame.midX, y: window.frame.midY)
+                return made.first { $0.contains(middle) } ?? made.first
+            }
+            return (window?.screen ?? NSScreen.main)?.visibleFrame
+        }
+
+        /// The side the window is up against, if it is, and if it can go
+        /// into it.
+        private func against() -> Side? {
+            guard let window, let area else { return nil }
+            let screens = Float.benchScreens ?? NSScreen.screens.map(\.frame)
+            if window.frame.maxX >= area.maxX - 16,
+               Float.dockable(window.frame, right: true, in: area, screens: screens) { return .right }
+            if window.frame.minX <= area.minX + 16,
+               Float.dockable(window.frame, right: false, in: area, screens: screens) { return .left }
+            return nil
+        }
+
+        /// Clearly sideways, and at that side.
+        private func outward(_ way: CGVector, from side: Side) -> Bool {
+            abs(way.dx) > abs(way.dy) * 1.2 && (side == .right ? way.dx > 0 : way.dx < 0)
+        }
+
+        /// Back towards the middle from the side it is docked at.
+        private func inward(_ way: CGVector) -> Bool {
+            guard let docked else { return false }
+            return abs(way.dx) > abs(way.dy) && (docked == .right ? way.dx < 0 : way.dx > 0)
+        }
+
+        private var settling: DispatchWorkItem?
+
+        /// A pull at a side over: into the side, or back out.
+        private func letGo() {
+            settling?.cancel()
+            settling = nil
+            guard let side = pulling else { return }
+            if outward(swipe, from: side), abs(swipe.dx) >= Controls.dockAt {
+                dock(side, from: pullFrom)
+            } else {
+                glide(to: pullFrom, bouncing: true)
+            }
+            pulling = nil
+            swipe = .zero
+            flicked = false
+        }
+
+        private func dock(_ side: Side, from origin: NSPoint? = nil) {
+            guard let window, let area else { return }
+            dockedFrom = origin ?? window.frame.origin
+            docked = side
+            glide(to: Float.docked(window.frame, right: side == .right, in: area, sliver: Controls.sliver))
+        }
+
+        private func undock() {
+            guard let window else { return }
+            let back = dockedFrom ?? window.frame.origin
+            docked = nil
+            dockedFrom = nil
+            glide(to: back, bouncing: true)
+        }
+
+        /// To the corner the swipe points at, a margin in from the edges of
+        /// the screen's usable part.
+        private func flick(_ way: CGVector) {
+            guard let window, let area else { return }
+            let target = Float.corner(for: window.frame, in: area, toward: way)
+            guard target != window.frame.origin else { return }
+            glide(to: target)
+        }
+
+        // The glide, a frame at a time off the display's own refresh — 120
+        // a second on a ProMotion screen, where AppKit's window animation
+        // stepped at 60 — on a critically damped spring: quick away,
+        // settling into the corner without overshooting it.
+        private var gliding: CADisplayLink?
+        private var glideFrom: NSPoint = .zero
+        private var glideTo: NSPoint = .zero
+        private var glideStart: CFTimeInterval = 0
+        /// Back out from a side: a spring that goes a little past and settles.
+        private var glideBounces = false
+
+        private func glide(to target: NSPoint, bouncing: Bool = false) {
+            guard let window else { return }
+            glideBounces = bouncing
+            glideFrom = window.frame.origin
+            glideTo = target
+            glideStart = CACurrentMediaTime()
+            if window.screen == nil {
+                // On no screen — the bench's window, off every one — there
+                // is no display to keep time by: a clock does instead.
+                ticking = ticking ?? Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.glideStep() }
+                }
+            } else if gliding == nil {
+                let link = displayLink(target: self, selector: #selector(glideStep(_:)))
+                link.add(to: .main, forMode: .common)
+                gliding = link
+            }
+        }
+
+        private var ticking: Timer?
+
+        @objc private func glideStep(_ link: CADisplayLink) { glideStep() }
+
+        private func glideStep() {
+            guard let window else { stopGlide(); return }
+            let t = CGFloat(CACurrentMediaTime() - glideStart)
+            let p: CGFloat
+            let done: Bool
+            if glideBounces {
+                // Underdamped: past the place, and back to it.
+                let omega: CGFloat = 16, zeta: CGFloat = 0.5
+                let damped = omega * sqrt(1 - zeta * zeta)
+                done = t > 0.9
+                p = done ? 1 : 1 - exp(-zeta * omega * t) * (cos(damped * t) + zeta / sqrt(1 - zeta * zeta) * sin(damped * t))
+            } else {
+                let omega: CGFloat = 15
+                done = t > 0.6
+                p = done ? 1 : 1 - (1 + omega * t) * exp(-omega * t)
+            }
+            window.setFrameOrigin(NSPoint(
+                x: glideFrom.x + (glideTo.x - glideFrom.x) * p,
+                y: glideFrom.y + (glideTo.y - glideFrom.y) * p
+            ))
+            if done { stopGlide() }
+        }
+
+        private func stopGlide() {
+            gliding?.invalidate()
+            gliding = nil
+            ticking?.invalidate()
+            ticking = nil
         }
 
         /// A pinch sizes it about the pointer: whatever is under your fingers
@@ -504,6 +853,9 @@ enum Isolate {
       }
       if (!best) return 'none';
 
+      // A landing still waiting for its tab is called off: the page is out
+      // again.
+      window.__officeFloatLanding = null;
       best.setAttribute('data-office-float', '');
       var sheet = document.getElementById('office-float');
       if (!sheet) {
@@ -520,13 +872,36 @@ enum Isolate {
         'left:0 !important; top:0 !important; right:0 !important; bottom:0 !important;',
         'width:100vw !important; height:100vh !important;',
         'max-width:none !important; max-height:none !important;',
-        'object-fit:contain !important; z-index:2147483647 !important}',
+        // Players such as Netflix center the element with a translation.
+        // With our top/left at zero, that moves it out of the floating window.
+        'transform:none !important; translate:none !important; rotate:none !important; scale:none !important;',
+        'opacity:1 !important; object-fit:contain !important; z-index:2147483647 !important}',
+        // Netflix renders timed text after the video, in a layer of its own
+        // beside it or one level up. Keep it above the video without
+        // exposing the rest of the player.
+        'html.office-floating [data-office-float] ~ .player-timedtext,',
+        'html.office-floating :has(> [data-office-float]) > .player-timedtext,',
+        'html.office-floating :has([data-office-float]) > .player-timedtext {',
+        'visibility:visible !important; z-index:2147483647 !important}',
         // Fixed or not, the video is still cut to the box of any ancestor
         // that clips — YouTube's player does — and in a window this small
         // that box sits partly or wholly off screen, more so on a page that
         // was scrolled. That was the black window.
         'html.office-floating body :has([data-office-float]) {',
-        'overflow:visible !important}',
+        'overflow:visible !important;',
+        // And fixed is only fixed to the window while no ancestor makes a
+        // box of its own for it: a transform, a filter, containment, a
+        // perspective, a backdrop, a container query — Twitch's player has
+        // some — and the video was placed and sized inside that box instead,
+        // part of it or none of it in the window. An ancestor drawn only
+        // when on screen (content-visibility) wasn't drawn at all once the
+        // rest of the page was hidden, and one faded out hid the video too.
+        'transform:none !important; translate:none !important; rotate:none !important; scale:none !important;',
+        'filter:none !important; backdrop-filter:none !important; -webkit-backdrop-filter:none !important;',
+        'perspective:none !important; contain:none !important; container-type:normal !important;',
+        'will-change:auto !important; content-visibility:visible !important;',
+        'clip-path:none !important; mask:none !important; -webkit-mask:none !important;',
+        'opacity:1 !important}',
         // The player's own controls would sit under ours, and two sets of
         // buttons on one small window is one set too many.
         'html.office-floating [data-office-float]::-webkit-media-controls {',
@@ -599,6 +974,11 @@ enum Isolate {
     })();
     """
 
+    /// Everything back as it was — once the page is back in its tab and laid
+    /// out at the tab's size. Put back at once, while the page still had
+    /// the little window's size, the player fitted the video to that, and
+    /// the tab's first frames could show it so: YouTube's, 720×240 in a
+    /// 720×405 window, dropped to a strip before it grew again (#257).
     static let off = """
     (function () {
       // The engine may have put the video in its own floating window as well —
@@ -617,14 +997,32 @@ enum Isolate {
         }
       } catch (e) {}
 
-      clearInterval(window.__officeFloatWatch);
-      window.__officeFloatWatch = null;
-      document.documentElement.classList.remove('office-floating');
-      var sheet = document.getElementById('office-float');
-      if (sheet) sheet.textContent = '';
-      var video = document.querySelector('[data-office-float]');
-      if (video) video.removeAttribute('data-office-float');
-      return 'landed';
+      var root = document.documentElement;
+      var landing = window.__officeFloatLanding = {};
+      function put() {
+        // Floated again in the meantime: that is the float's now.
+        if (window.__officeFloatLanding !== landing) return;
+        window.__officeFloatLanding = null;
+        clearInterval(window.__officeFloatWatch);
+        window.__officeFloatWatch = null;
+        root.classList.remove('office-floating');
+        var sheet = document.getElementById('office-float');
+        if (sheet) sheet.textContent = '';
+        var video = document.querySelector('[data-office-float]');
+        if (video) video.removeAttribute('data-office-float');
+      }
+      // Each frame until the page is laid out at another size than the
+      // little window's — the tab's — and its player has had that frame's
+      // resize to fit the video to it. A page not drawn, its tab no longer
+      // the one in front, is put back by the clock.
+      var wide = innerWidth, high = innerHeight, began = Date.now();
+      (function frame() {
+        if (window.__officeFloatLanding !== landing) return;
+        if (innerWidth !== wide || innerHeight !== high || Date.now() - began > 400) return put();
+        requestAnimationFrame(frame);
+      })();
+      setTimeout(put, 1000);
+      return 'landing';
     })();
     """
 }

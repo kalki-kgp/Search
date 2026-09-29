@@ -6,7 +6,7 @@ import Security
 // Knowing when there is a newer one, and having it ready.
 //
 // No framework, no background daemon: one small JSON file next to the
-// download, read once a day and whenever asked. If it names a build newer
+// download, read at launch, every hour and whenever asked. If it names a build newer
 // than this one, the ZIP it points at is fetched quietly, checked, and put
 // where this bundle is — so the next time the app opens, it is the new one.
 // Chrome's way, without Chrome's machinery. Nothing relaunches on its own; a
@@ -32,15 +32,25 @@ final class Updater: ObservableObject {
     /// Where the file lives. SEARCH_FEED, for a test run, points somewhere
     /// else — and is the only way plain http is accepted, so a build that
     /// was not handed the variable only ever listens to the real site.
+    /// SEARCH_FEED points a test run at a feed of its own. Only a test run:
+    /// the browser people use reads Office Commun's feed whatever the
+    /// environment it was started with says.
     static let feed: URL = {
-        if let set = ProcessInfo.processInfo.environment["SEARCH_FEED"], let url = URL(string: set) {
+        if overridden, let set = ProcessInfo.processInfo.environment["SEARCH_FEED"], let url = URL(string: set) {
             return url
         }
+        // An Intel Mac has a download of its own from 1.0.5 (build.sh,
+        // SEARCH_ARCH=x86_64) and a feed beside it naming only Intel builds,
+        // so neither kind of Mac is ever offered the other's.
+        #if arch(x86_64)
+        return URL(string: "https://officecommun.com/search/intel/appcast.json")!
+        #else
         return URL(string: "https://officecommun.com/search/appcast.json")!
+        #endif
     }()
 
     private static var overridden: Bool {
-        ProcessInfo.processInfo.environment["SEARCH_FEED"] != nil
+        Store.testing && ProcessInfo.processInfo.environment["SEARCH_FEED"] != nil
     }
 
     struct Release: Equatable {
@@ -52,6 +62,8 @@ final class Updater: ObservableObject {
         let dmg: URL
         /// Hex of the ZIP, when the feed gives one.
         let sha256: String?
+        /// Hex of the disk image, for the one Search fetches itself.
+        var dmgSha256: String? = nil
         let notes: String?
         let minimumSystemVersion: String?
 
@@ -80,6 +92,9 @@ final class Updater: ObservableObject {
         /// Couldn't be swapped in from here, so the disk image is offered
         /// instead — the same as the first time.
         case offered(Release)
+        /// Found, and waiting to be asked for: installing on its own is
+        /// switched off in Settings; Install Update is in the Search menu.
+        case waiting(Release)
     }
 
     @Published private(set) var stage: Stage = .none
@@ -99,6 +114,9 @@ final class Updater: ObservableObject {
     }
 
     private var lastKey: String { "update.checked" }
+    nonisolated static let installKey = "update.install"
+    /// Settings › About › Install updates on its own. On unless switched off.
+    private var installsOnItsOwn: Bool { Store.settings.object(forKey: Updater.installKey) as? Bool ?? true }
     /// Where a line goes when there is one to say, handed over at launch.
     private var say: ((String) -> Void)?
 
@@ -110,7 +128,7 @@ final class Updater: ObservableObject {
         ) { _ in Swap.sweep() }
     }
 
-    /// At launch: once a day, quietly. A test run, pointed at its own feed,
+    /// At launch, then every hour, quietly. A test run, pointed at its own feed,
     /// checks every time.
     func checkIfDue(then say: @escaping (String) -> Void) {
         self.say = say
@@ -123,15 +141,38 @@ final class Updater: ObservableObject {
             }
             clock?.tolerance = 60 * 5
         }
-        checkIfDue()
+        // At every launch, whenever the last look was.
+        check { _ in }
     }
 
     private var clock: Timer?
 
+    /// Every hour, give or take the clock's tolerance: one small signed file.
     private func checkIfDue() {
         let last = Store.settings.object(forKey: lastKey) as? Date ?? .distantPast
-        guard Updater.overridden || Date().timeIntervalSince(last) > 60 * 60 * 20 else { return }
+        guard Updater.overridden || Date().timeIntervalSince(last) > 60 * 50 else { return }
         check { _ in }
+    }
+
+    /// Search › Check for Updates…: the result is said in the line at the
+    /// foot of the window, and an available update is offered in the menu.
+    func checkByHand() {
+        switch stage {
+        case .ready(let next):
+            say?("Search \(next.version) is ready — relaunch to use it")
+            return
+        case .fetching(let next):
+            say?("Search \(next.version) is downloading…")
+            return
+        default: break
+        }
+        guard !checking else { return }
+        say?("Checking for updates…")
+        check { [weak self] found in
+            guard let self else { return }
+            if found == nil { self.say?("Search is up to date"); return }
+            // The waiting branch or `take` announces the next state afterward.
+        }
     }
 
     /// Now, because somebody asked. `done` gets the newer build the feed
@@ -154,8 +195,50 @@ final class Updater: ObservableObject {
                 return
             }
             done(found)
-            take(found)
+            guard !installsOnItsOwn else { take(found); return }
+            switch stage {
+            case .fetching, .ready: break
+            case .waiting(let known) where known == found: break
+            case .none, .offered, .waiting:
+                stage = .waiting(found)
+                say?("Search \(found.version) is out — choose Install Update in the Search menu")
+            }
         }
+    }
+
+    /// The disk image, when the bundle can't be swapped where it is: fetched
+    /// by Search itself, never through a web page, and opened only if its
+    /// hash is the signed feed's and its signature is Office Commun's.
+    @Published private(set) var fetchingDisk = false
+    /// What a test run decided about a disk image, for the bench.
+    static var diskVerdict = ""
+
+    func openDisk() {
+        guard case .offered(let release) = stage, !fetchingDisk else { return }
+        fetchingDisk = true
+        say?("Downloading Search \(release.version)…")
+        Task.detached(priority: .utility) {
+            let result: Result<URL, Error>
+            do { result = .success(try await Swap.disk(release)) } catch { result = .failure(error) }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                fetchingDisk = false
+                switch result {
+                case .success(let dmg):
+                    if Store.testing { Updater.diskVerdict = "verified" } else { NSWorkspace.shared.open(dmg) }
+                case .failure(let error):
+                    Updater.diskVerdict = "refused: \(error)"
+                    say?("That download didn't check out — get Search from officecommun.com/search")
+                }
+            }
+        }
+    }
+
+    /// Install, because somebody pressed it: the same fetch, checks and swap
+    /// as on its own.
+    func install() {
+        guard case .waiting(let release) = stage else { return }
+        take(release)
     }
 
     /// Fetch it, check it, swap it in — unless one is already on its way,
@@ -165,9 +248,10 @@ final class Updater: ObservableObject {
     private func take(_ release: Release) {
         switch stage {
         case .fetching, .ready: return
-        case .none, .offered: break
+        case .none, .offered, .waiting: break
         }
         stage = .fetching(release)
+        say?("Search \(release.version) is downloading…")
         Task.detached(priority: .utility) {
             let worked: Bool
             do {
@@ -185,7 +269,7 @@ final class Updater: ObservableObject {
         stage = worked ? .ready(release) : .offered(release)
         say?(worked
             ? "Search \(release.version) is ready — it's there the next time you open it"
-            : "Search \(release.version) is out — it's in Settings")
+            : "Search \(release.version) is out — choose Download Update in the Search menu")
     }
 
     /// Quit, and come back as the new one. A shell waits for this process
@@ -217,11 +301,12 @@ final class Updater: ObservableObject {
     }
 
     private static func fetch() async -> Release? {
-        var request = URLRequest(url: feed)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = 12
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+        // The feed as Office Commun signed it: appcast.json.zip, next to the
+        // plain one older builds read, holding the same file with its code
+        // signature (build.sh). Only what comes out of it, checked, is read:
+        // a feed a server or a hijacked answer made up is no feed at all.
+        guard let packed = await get(feed.appendingPathExtension("zip"), limit: 1 << 20),
+              let data = await Task.detached(priority: .utility, operation: { Updater.opened(packed) }).value,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let version = json["version"] as? String,
               let build = (json["build"] as? Int) ?? Int(json["build"] as? String ?? ""),
@@ -229,8 +314,9 @@ final class Updater: ObservableObject {
               let dmg = link(json["dmg"])
         else { return nil }
         let sha = (json["sha256"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let dmgSha = (json["dmgSha256"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let notes = (json["notes"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Release(
+        var release = Release(
             version: version,
             build: build,
             archive: archive,
@@ -239,13 +325,62 @@ final class Updater: ObservableObject {
             notes: notes.flatMap { $0.isEmpty ? nil : $0 },
             minimumSystemVersion: json["minimumSystemVersion"] as? String
         )
+        release.dmgSha256 = dmgSha.flatMap { $0.isEmpty ? nil : $0 }
+        return release
+    }
+
+    private static func get(_ url: URL, limit: Int) async -> Data? {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 12
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+              data.count <= limit
+        else { return nil }
+        return data
+    }
+
+    /// The team that signs Search's releases, and with them its feed.
+    nonisolated static let team = "7BYKA895MC"
+    nonisolated static let feedIdentifier = "com.officecommun.search.appcast"
+
+    /// The feed inside `packed`, if it is Office Commun's: appcast.json with
+    /// a code signature (codesign keeps it in the file's extended attributes,
+    /// and ditto carries those in the ZIP) that holds up and meets the
+    /// Developer ID requirement for the team and the feed's own identifier.
+    /// No new key to keep: the one that signs the app signs its feed.
+    nonisolated static func opened(_ packed: Data) -> Data? {
+        let files = FileManager.default
+        let folder = files.temporaryDirectory.appendingPathComponent("search-feed-\(UUID().uuidString)", isDirectory: true)
+        guard (try? files.createDirectory(at: folder, withIntermediateDirectories: true)) != nil else { return nil }
+        defer { try? files.removeItem(at: folder) }
+        let zip = folder.appendingPathComponent("appcast.json.zip")
+        let out = folder.appendingPathComponent("out", isDirectory: true)
+        guard (try? packed.write(to: zip)) != nil, (try? Swap.unzip(zip, into: out)) != nil else { return nil }
+        let file = out.appendingPathComponent("appcast.json")
+        // The file itself, not a link to one somewhere else.
+        guard let kind = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              kind.isRegularFile == true, kind.isSymbolicLink != true,
+              let data = try? Data(contentsOf: file), data.count <= 1 << 20
+        else { return nil }
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(file as CFURL, [], &code) == errSecSuccess, let code,
+              let requirement = Swap.developerID(team: team, identifier: feedIdentifier),
+              SecStaticCodeCheckValidity(code, [], requirement) == errSecSuccess
+        else { return nil }
+        return data
     }
 
     /// An address from the feed: https, unless the feed itself was pointed
-    /// at a test server.
+    /// at a test server, and on the feed's own host. The ZIP is checked
+    /// again by hash and signature before it is ever run, but the DMG is
+    /// only ever offered, under the app's own "is out" line - so a feed
+    /// that a compromised host or a hijacked DNS answer could redirect must
+    /// not be able to point that line at some other address.
     private static func link(_ value: Any?) -> URL? {
         guard let url = (value as? String).flatMap(URL.init(string:)) else { return nil }
         guard url.scheme == "https" || (overridden && url.scheme == "http") else { return nil }
+        guard url.host == feed.host else { return nil }
         return url
     }
 }
@@ -289,9 +424,9 @@ private enum Swap {
 
         let zip = scratch.appendingPathComponent("Search.zip")
         try await download(release.archive, to: zip)
-        if let expected = release.sha256 {
-            guard try digest(of: zip) == expected else { throw Refused.hash }
-        }
+        // A feed with no checksum is refused as a wrong one would be: build.sh
+        // always writes it, so one missing is a feed that isn't ours.
+        guard let expected = release.sha256, try digest(of: zip) == expected else { throw Refused.hash }
         let unpacked = scratch.appendingPathComponent("unpacked", isDirectory: true)
         try extract(zip, into: unpacked)
         guard let fresh = try files.contentsOfDirectory(at: unpacked, includingPropertiesForKeys: nil)
@@ -301,7 +436,7 @@ private enum Swap {
         try swap(fresh)
     }
 
-    private static func download(_ url: URL, to file: URL) async throws {
+    static func download(_ url: URL, to file: URL) async throws {
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 60
@@ -313,7 +448,7 @@ private enum Swap {
         try FileManager.default.moveItem(at: got, to: file)
     }
 
-    private static func digest(of file: URL) throws -> String {
+    static func digest(of file: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var sha = SHA256()
@@ -328,6 +463,8 @@ private enum Swap {
     /// nothing it downloads carries the flag, and there is none to strip.
     /// Keep it that way: the checking is done here, in verify, not by
     /// Gatekeeper at the next launch.
+    static func unzip(_ zip: URL, into folder: URL) throws { try extract(zip, into: folder) }
+
     private static func extract(_ zip: URL, into folder: URL) throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let ditto = Process()
@@ -342,7 +479,11 @@ private enum Swap {
 
     /// A bundle is not trusted because it arrived. It is trusted because it
     /// is this app, newer, with a signature that holds up under the strict
-    /// check for every architecture, from the same team as the one running.
+    /// check for every architecture and meets Developer ID's requirement:
+    /// a certificate chain that ends at Apple's root, through Apple's
+    /// Developer ID authority, issued to the same team as the one running.
+    /// A Team ID read from the signature alone is only what the certificate
+    /// says, and anyone can make a certificate that says it.
     private static func verify(_ bundle: URL, team: String) throws {
         let plist = bundle.appendingPathComponent("Contents/Info.plist")
         guard let data = try? Data(contentsOf: plist),
@@ -358,9 +499,42 @@ private enum Swap {
         guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &code) == errSecSuccess, let code else {
             throw Refused.unsigned
         }
-        let strict = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures)
-        guard SecStaticCodeCheckValidity(code, strict, nil) == errSecSuccess else { throw Refused.unsigned }
+        guard let identifier = Bundle.main.bundleIdentifier, let requirement = developerID(team: team, identifier: identifier)
+        else { throw Refused.unsigned }
+        let strict = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures | kSecCSCheckNestedCode)
+        guard SecStaticCodeCheckValidity(code, strict, requirement) == errSecSuccess else { throw Refused.unsigned }
         guard teamID(of: bundle) == team else { throw Refused.wrongTeam }
+    }
+
+    /// The requirement every Developer ID app from this team meets, the one
+    /// `codesign -d -r-` prints for a shipped Search: Apple's anchor, the
+    /// Developer ID intermediate (…6.2.6) and a Developer ID Application
+    /// leaf (…6.1.13), with this team in it, for this bundle id.
+    /// The disk image, fetched, checked against the signed feed's hash and
+    /// against Developer ID for the team. Its name is the build's own.
+    static func disk(_ release: Updater.Release) async throws -> URL {
+        guard let expected = release.dmgSha256 else { throw Refused.hash }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("search-disk-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let dmg = folder.appendingPathComponent("Search \(release.version).dmg")
+        try await download(release.dmg, to: dmg)
+        guard try digest(of: dmg) == expected else { throw Refused.hash }
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(dmg as CFURL, [], &code) == errSecSuccess, let code,
+              let requirement = developerID(team: Updater.team, identifier: nil),
+              SecStaticCodeCheckValidity(code, [], requirement) == errSecSuccess
+        else { throw Refused.unsigned }
+        return dmg
+    }
+
+    static func developerID(team: String, identifier: String?) -> SecRequirement? {
+        let text = "anchor apple generic" + (identifier.map { " and identifier \"\($0)\"" } ?? "")
+            + " and certificate 1[field.1.2.840.113635.100.6.2.6]"
+            + " and certificate leaf[field.1.2.840.113635.100.6.1.13]"
+            + " and certificate leaf[subject.OU] = \"\(team)\""
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess else { return nil }
+        return requirement
     }
 
     /// The team that signed a bundle, as the system reads it — nil for an
@@ -406,5 +580,13 @@ private enum Swap {
               info["CFBundleIdentifier"] as? String == Bundle.main.bundleIdentifier
         else { return }
         try? FileManager.default.removeItem(at: aside)
+    }
+}
+
+extension Updater {
+    /// Developer ID for this team, and the identifier when given: the same
+    /// requirement a release is checked against, for the AI engine too.
+    nonisolated static func developerID(team: String, identifier: String?) -> SecRequirement? {
+        Swap.developerID(team: team, identifier: identifier)
     }
 }
