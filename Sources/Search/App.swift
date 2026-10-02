@@ -654,6 +654,9 @@ struct ContentView: View {
                 }
             }
             .onChange(of: browser.activeID) { _, _ in handBack() }
+            .onChange(of: browser.editingTab) { _, editing in
+                if editing == nil { handBack() }
+            }
             .animation(Motion.settle, value: browser.recalling)
             .animation(Motion.settle, value: browser.hoarding)
             .animation(Motion.settle, value: browser.tuning)
@@ -1256,7 +1259,11 @@ struct ContentView: View {
                 browser.step(flags.contains(.shift) ? -1 : 1)
                 return true
             }
-            if browser.editingTab != nil { return true }
+            if browser.editingTab != nil {
+                if !flags.contains(.shift), browser.lockTabSiteOffer() { return true }
+                browser.walkTabOffers(flags.contains(.shift) ? -1 : 1)
+                return true
+            }
             // "red" then Tab: Reddit, in the field (SiteSearch.swift).
             if browser.fieldShowing, !flags.contains(.shift), browser.lockSiteOffer() { return true }
             if browser.fieldShowing, !browser.offers.isEmpty {

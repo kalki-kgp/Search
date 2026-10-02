@@ -813,6 +813,7 @@ private struct TabPill: View {
         let controls = showMedia && mediaHover && w >= 140
         return HStack(spacing: max(3, 6 * squeeze)) {
             if editing {
+                if let site = browser.tabSiteChip { SiteChip(site: site) }
                 TabAddressField(browser: browser)
                     .frame(height: 16)
             } else {
@@ -1138,9 +1139,13 @@ struct TabAddressField: NSViewRepresentable {
     func updateNSView(_ field: NSTextField, context: Context) {
         let coordinator = context.coordinator
         coordinator.browser = browser
-        if !coordinator.typing, field.stringValue != browser.tabDraft {
-            field.stringValue = browser.tabDraft
+        let want = browser.tabCompleted
+        if !coordinator.typing, want != coordinator.synced {
+            coordinator.synced = want
+            field.stringValue = want
+            coordinator.select(from: browser.tabDraft, in: field)
         }
+        coordinator.suggestions.update(anchor: field)
         guard !coordinator.claimed else { return }
         coordinator.claimed = true
         DispatchQueue.main.async {
@@ -1158,14 +1163,33 @@ struct TabAddressField: NSViewRepresentable {
         var browser: Browser
         var claimed = false
         var typing = false
+        var synced = ""
+        private var deleting = false
+        @MainActor lazy var suggestions = TabSuggestionPanel(browser: browser)
 
         init(browser: Browser) { self.browser = browser }
 
         func controlTextDidChange(_ note: Notification) {
             guard let field = note.object as? NSTextField else { return }
             typing = true
-            browser.tabDraft = field.stringValue
+            let text = field.stringValue
+            browser.tabDraft = text
+            if deleting { browser.stopTabCompleting() }
+            deleting = false
+            if browser.tabEnding != nil {
+                field.stringValue = browser.tabCompleted
+                select(from: text, in: field)
+            }
+            synced = field.stringValue
             typing = false
+        }
+
+        func select(from typed: String, in field: NSTextField) {
+            guard let editor = field.currentEditor() as? NSTextView else { return }
+            let start = (typed as NSString).length
+            let length = (field.stringValue as NSString).length
+            guard start <= length else { return }
+            editor.selectedRange = NSRange(location: start, length: length - start)
         }
 
         func control(
@@ -1182,6 +1206,34 @@ struct TabAddressField: NSViewRepresentable {
             case #selector(NSResponder.cancelOperation(_:)):
                 browser.cancelTabEdit()
                 return true
+            case #selector(NSResponder.moveDown(_:)) where !browser.renamingTab:
+                browser.walkTabOffers(1)
+                return true
+            case #selector(NSResponder.moveUp(_:)) where !browser.renamingTab:
+                browser.walkTabOffers(-1)
+                return true
+            case #selector(NSResponder.moveRight(_:)) where browser.tabEnding != nil:
+                let selected = textView.selectedRange()
+                guard NSMaxRange(selected) == (textView.string as NSString).length else { return false }
+                browser.acceptTabEnding()
+                return true
+            case #selector(NSResponder.deleteWordBackward(_:)):
+                deleting = true
+                let selected = textView.selectedRange()
+                guard browser.tabEnding != nil, selected.length > 0,
+                      NSMaxRange(selected) == (textView.string as NSString).length else { return false }
+                textView.delete(nil)
+                deleting = true
+                textView.deleteWordBackward(nil)
+                return true
+            case #selector(NSResponder.deleteBackward(_:)) where textView.string.isEmpty && browser.tabSiteChip != nil:
+                browser.clearTabSiteChip()
+                return true
+            case #selector(NSResponder.deleteBackward(_:)),
+                 #selector(NSResponder.deleteForward(_:)),
+                 #selector(NSResponder.deleteWordForward(_:)):
+                deleting = true
+                return false
             default:
                 return false
             }
@@ -1190,7 +1242,11 @@ struct TabAddressField: NSViewRepresentable {
         /// Clicking anywhere else keeps what was typed, as Return does.
         func controlTextDidEndEditing(_ note: Notification) {
             let browser = browser
-            DispatchQueue.main.async { browser.finishTabEdit() }
+            let id = browser.editingTab
+            DispatchQueue.main.async {
+                guard browser.editingTab == id else { return }
+                browser.finishTabEdit()
+            }
         }
 
         /// A press on something that takes no focus — the strip's empty
@@ -1215,6 +1271,7 @@ struct TabAddressField: NSViewRepresentable {
         @MainActor func unwatch() {
             if let watcher { NSEvent.removeMonitor(watcher) }
             watcher = nil
+            suggestions.stop()
         }
     }
 }

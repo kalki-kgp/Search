@@ -1293,7 +1293,18 @@ final class Browser: NSObject, ObservableObject {
     /// Clicking the tab you are already on turns it into the address, short
     /// form, ready to be changed.
     @Published private(set) var editingTab: Tab.ID?
-    @Published var tabDraft = ""
+    @Published var tabDraft = "" { didSet { guessTab() } }
+    @Published private(set) var tabOffers: [Suggestion] = []
+    @Published private(set) var tabEnding: String?
+    @Published private(set) var tabPicked: Int?
+    @Published private(set) var tabSiteOffer: SearchSite?
+    @Published private(set) var tabSiteChip: SearchSite?
+    private var originalTabDraft = ""
+
+    var tabCompleted: String {
+        if let tabPicked, tabOffers.indices.contains(tabPicked) { return tabOffers[tabPicked].key }
+        return tabDraft + (tabEnding ?? "")
+    }
     /// Set while that field is being used to name the tab rather than to go
     /// somewhere: the same field, the same keys, a different thing at the end.
     @Published private(set) var renamingTab = false
@@ -1303,17 +1314,23 @@ final class Browser: NSObject, ObservableObject {
             edit()
             return
         }
+        editing = false
+        summoning = false
         renamingTab = false
-        tabDraft = Address.editable(url)
+        tabSiteChip = nil
+        originalTabDraft = Address.editable(url)
+        tabDraft = originalTabDraft
         editingTab = tab.id
+        guessTab()
     }
 
     /// Rename. The name the tab is wearing arrives selected, so typing
     /// replaces it; emptying the field gives the page its own title back.
     func beginTabRename(_ tab: Tab) {
         renamingTab = true
-        tabDraft = tab.label
+        tabSiteChip = nil
         editingTab = tab.id
+        tabDraft = tab.label
     }
 
     func commitTabEdit() {
@@ -1325,19 +1342,90 @@ final class Browser: NSObject, ObservableObject {
             writeSession(now: true)
             return
         }
-        guard let url = destination(for: tabDraft) else {
+        if let tabPicked, tabOffers.indices.contains(tabPicked) {
+            takeTabOffer(tabOffers[tabPicked])
+            return
+        }
+        if let first = tabOffers.first, first.kind.isCommand {
+            takeTabOffer(first)
+            return
+        }
+        guard let url = tabDestination(for: tabCompleted) else {
             // Stay put and say so, rather than quietly throwing the edit away.
             refusals += 1
             return
         }
-        editingTab = nil
+        cancelTabEdit()
         tab.go(to: url)
     }
 
     func cancelTabEdit() {
         editingTab = nil
         renamingTab = false
+        tabSiteChip = nil
+        originalTabDraft = ""
         tabDraft = ""
+    }
+
+    private func tabDestination(for text: String) -> URL? {
+        if let site = tabSiteChip { return site.url(for: text) }
+        return destination(for: text)
+    }
+
+    private func guessTab() {
+        tabPicked = nil
+        guard editingTab != nil, !renamingTab,
+              tabDraft != originalTabDraft || tabSiteChip != nil else {
+            tabOffers = []
+            tabEnding = nil
+            tabSiteOffer = nil
+            return
+        }
+        let result = addressSuggestions(for: tabDraft, site: tabSiteChip)
+        tabOffers = result.offers
+        tabEnding = result.ending
+        tabSiteOffer = result.site
+    }
+
+    func takeTabOffer(_ offer: Suggestion) {
+        guard !renamingTab, let id = editingTab,
+              let tab = tabs.first(where: { $0.id == id }) else { return }
+        cancelTabEdit()
+        if case .command(let command) = offer.kind {
+            command.run(on: self)
+        } else {
+            tab.go(to: offer.url)
+        }
+    }
+
+    func walkTabOffers(_ step: Int) {
+        guard !tabOffers.isEmpty else { return }
+        if let here = tabPicked {
+            let next = here + step
+            tabPicked = tabOffers.indices.contains(next) ? next : nil
+        } else {
+            tabPicked = step > 0 ? 0 : tabOffers.count - 1
+        }
+    }
+
+    func stopTabCompleting() { tabEnding = nil }
+
+    func acceptTabEnding() {
+        guard let tabEnding, !tabEnding.isEmpty else { return }
+        tabDraft += tabEnding
+    }
+
+    @discardableResult
+    func lockTabSiteOffer() -> Bool {
+        guard prefs.searchesSites, let site = tabSiteOffer else { return false }
+        tabSiteChip = site
+        tabDraft = ""
+        return true
+    }
+
+    func clearTabSiteChip() {
+        tabSiteChip = nil
+        guessTab()
     }
 
     /// A click somewhere else — the page, the column below, the rest of the
@@ -1351,8 +1439,8 @@ final class Browser: NSObject, ObservableObject {
             return
         }
         let draft = tabDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if draft.isEmpty || tab.address.map({ Address.editable($0) == draft }) == true
-            || destination(for: draft) == nil {
+        if tabSiteChip == nil && (draft.isEmpty || tab.address.map({ Address.editable($0) == draft }) == true)
+            || tabDestination(for: draft) == nil {
             cancelTabEdit()
             return
         }
@@ -3645,28 +3733,25 @@ final class Browser: NSObject, ObservableObject {
             return
         }
 
-        // A site in the field: only its search, for what is typed after it.
-        if let site = siteChip {
-            siteOffer = nil
-            ending = nil
-            picked = nil
+        let result = addressSuggestions(for: typed, site: siteChip)
+        offers = result.offers
+        ending = result.ending
+        siteOffer = result.site
+        picked = nil
+    }
+
+    /// Both address fields ask the same history, search engine and commands.
+    private func addressSuggestions(for typed: String, site chip: SearchSite?)
+        -> (offers: [Suggestion], ending: String?, site: SearchSite?) {
+        if let site = chip {
             let words = typed.trimmingCharacters(in: .whitespaces)
-            offers = words.isEmpty ? [] : site.url(for: words).map {
+            let list = words.isEmpty ? [] : site.url(for: words).map {
                 [Suggestion(key: words, title: site.name, url: $0, kind: .search)]
             } ?? []
-            return
+            return (list, nil, nil)
         }
-
-        guard !typed.trimmingCharacters(in: .whitespaces).isEmpty else {
-            offers = []
-            ending = nil
-            picked = nil
-            siteOffer = nil
-            return
-        }
-        // "red": Reddit's search, a Tab away.
-        let site = prefs.searchesSites && !summoning ? SiteSearch.match(typed) : nil
-        if siteOffer != site { siteOffer = site }
+        guard !typed.trimmingCharacters(in: .whitespaces).isEmpty else { return ([], nil, nil) }
+        let site = prefs.searchesSites ? SiteSearch.match(typed) : nil
 
         // Three places and, if it can't be a place, a search. No open pages:
         // ⌘K exists for those, and mixing them in here made the list long
@@ -3687,16 +3772,13 @@ final class Browser: NSObject, ObservableObject {
         // point, and it would otherwise sit under a search for the word.
         let command = prefs.commandBar ? AddressCommand.matching(typed, in: self) : nil
         if let command { list.insert(.command(command), at: 0) }
-        offers = list
         // Neither a page already open nor a command has an address to
         // complete towards. And with a command on top, Return runs it: a
         // grey ending in the field ("history" finishing as history.com)
         // would promise a place Return doesn't go to.
-        ending = command != nil ? nil
-            : history.completion(for: typed, among: offers.filter { $0.kind != .open && !$0.kind.isCommand })
-        // A row that was picked stops being the right row the moment the
-        // question changes.
-        picked = nil
+        let ending = command != nil ? nil
+            : history.completion(for: typed, among: list.filter { $0.kind != .open && !$0.kind.isCommand })
+        return (list, ending, site)
     }
 
     /// What is open, most recently looked at first, filtered by what has been
@@ -3781,6 +3863,7 @@ final class Browser: NSObject, ObservableObject {
     /// ⌘L. The current address comes up selected, so typing over it replaces it
     /// and Escape puts it back.
     func edit() {
+        cancelTabEdit()
         summoning = false
         // Never a name and password written into the address: they would be
         // on screen, and in whatever you copy from here.
