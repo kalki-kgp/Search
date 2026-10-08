@@ -1006,9 +1006,7 @@ struct BookmarkCard: View {
         }
         .padding(14)
         .frame(width: 280)
-        .background(Palette.ground)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
+        .popoverGround(card: true)
         .onAppear {
             title = bookmarks.bookmark(id)?.title ?? ""
             // The popover's window takes the keyboard only after this, and
@@ -1134,9 +1132,7 @@ struct BookmarksDropdown: View {
             .padding(6)
         }
         .frame(width: 280)
-        .background(Palette.ground)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
+        .popoverGround(card: true)
     }
 
     /// The list as tall as the whole tree would be with every folder open,

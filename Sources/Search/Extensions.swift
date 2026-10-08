@@ -1784,7 +1784,7 @@ private struct ExtensionMenu: View {
             .padding(6)
         }
         .frame(width: 280)
-        .background(Palette.ground)
+        .popoverGround()
     }
 
     private struct Row: View {
