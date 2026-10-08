@@ -37,7 +37,11 @@ import WebKit
 final class Passkeys: NSObject {
     static let shared = Passkeys()
 
-    private static let log = Logger(subsystem: "com.officecommun.search", category: "Passkeys")
+    static let log = Logger(subsystem: "com.officecommun.search", category: "Passkeys")
+
+    /// No entitlement: a browser that has it signs (Lender), and
+    /// AuthenticationServices, which would refuse, is never asked.
+    static let lent = !Preferences.entitledToPasskeys && Lender.browser != nil
 
     // MARK: - the Mac's permission
 
@@ -107,6 +111,7 @@ final class Passkeys: NSObject {
             Passkeys.changed(waiting.web)
             return
         }
+        if Passkeys.lent { return Lender.cancel() }
         if token == self.token { controller?.cancel() } else { withdrawn = token }
     }
 
@@ -184,6 +189,11 @@ final class Passkeys: NSObject {
         if Store.testing {
             return settle(key, token: body["token"] as? String, [Offered(id: Passkeys.rehearsalID, name: "probe@\(rp)", provider: "Test")])
         }
+        // The browser can't be asked which passkeys there are without a
+        // sheet: one row that brings the sheet up when picked.
+        if Passkeys.lent {
+            return settle(key, token: body["token"] as? String, [Offered(id: Passkeys.anyID, name: "Use a passkey", provider: "iCloud Keychain")])
+        }
         // Not asked for here: a site loading is no time for macOS's question.
         // Until it has been answered, the field offers none.
         guard Passkeys.access == .authorized else { return }
@@ -231,6 +241,9 @@ final class Passkeys: NSObject {
                                                  second: nil, for: Passkeys.pageKey(waiting.body))
             }
             return waiting.answer(reply)
+        }
+        if Passkeys.lent {
+            return Lender.perform(waiting.body, rp: waiting.rp, origin: waiting.origin, in: web.window, answer: waiting.answer)
         }
         let request = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: waiting.rp)
             .createCredentialAssertionRequest(clientData: waiting.clientData)
@@ -297,6 +310,16 @@ final class Passkeys: NSObject {
         if let web = caller.web, caller.mainFrame, let waiting = conditional.removeValue(forKey: ObjectIdentifier(web)) {
             waiting.answer(Passkeys.failure("NotAllowedError", "A newer request took its place."))
             Passkeys.changed(web)
+        }
+
+        if Passkeys.lent, !Store.testing {
+            guard kind == "get" || kind == "create" else {
+                return refuse(answer, "NotSupportedError", "Not a passkey request.")
+            }
+            Passkeys.asked += 1
+            Passkeys.last = ["kind": kind, "rp": rp, "origin": origin, "requests": 1, "lent": true]
+            Passkeys.log.notice("\(kind, privacy: .public) for \(rp, privacy: .public) from \(origin, privacy: .public), signed by \(Lender.browser?.name ?? "", privacy: .public)")
+            return Lender.perform(body, rp: rp, origin: origin, in: caller.window, answer: answer)
         }
 
         let requests: [ASAuthorizationRequest]
@@ -515,7 +538,7 @@ final class Passkeys: NSObject {
         answer(Passkeys.failure(name, message))
     }
 
-    private static func failure(_ name: String, _ message: String) -> [String: Any] {
+    static func failure(_ name: String, _ message: String) -> [String: Any] {
         ["error": name, "message": message]
     }
 
@@ -541,6 +564,9 @@ final class Passkeys: NSObject {
         }
         return reply
     }
+
+    /// The one row offered under the field when a browser signs.
+    static let anyID = Data("any".utf8)
 
     static let rehearsalID = Data((0..<16).map { UInt8($0) })
 
@@ -1093,7 +1119,7 @@ final class PasskeyRelay: NSObject, WKScriptMessageHandlerWithReply {
         try {
           request = {
             kind: 'create', challenge: encode(pk.challenge),
-            rp: { id: (pk.rp && pk.rp.id) || null },
+            rp: { id: (pk.rp && pk.rp.id) || null, name: (pk.rp && pk.rp.name) ? String(pk.rp.name) : null },
             user: { id: encode(pk.user.id), name: String(pk.user.name), displayName: pk.user.displayName ? String(pk.user.displayName) : '' },
             algorithms: Array.prototype.map.call(pk.pubKeyCredParams || [], function (p) { return p.alg; }),
             excludeCredentials: descriptors(pk.excludeCredentials),

@@ -377,10 +377,16 @@ final class Preferences: ObservableObject {
         // the first run of a build that can offers them, whatever was set
         // before; from then on the switch is the person's.
         let entitled = Preferences.entitledToPasskeys
-        passkeysPossible = entitled
+        // Without the entitlement, a browser that has it can sign (Lender):
+        // offered once to a build that couldn't before.
+        passkeysPossible = entitled || Lender.browser != nil
         if entitled, !store.bool(forKey: "passkeys.entitled") {
             passkeys = true
             store.set(true, forKey: "passkeys")
+        } else if passkeysPossible, !entitled, !store.bool(forKey: "passkeys.lent") {
+            passkeys = true
+            store.set(true, forKey: "passkeys")
+            store.set(true, forKey: "passkeys.lent")
         } else {
             passkeys = store.object(forKey: "passkeys") as? Bool ?? entitled
         }
