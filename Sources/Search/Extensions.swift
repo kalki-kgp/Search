@@ -1587,10 +1587,13 @@ struct ExtensionSlot: View {
     /// The side the list opens toward: down from the top row, out to the
     /// right from the sidebar.
     var edge: Edge = .bottom
+    /// How many pinned ones the row has room for; the rest are only in the
+    /// list. Nil: all of them.
+    var room: Int? = nil
 
     var body: some View {
         if #available(macOS 15.4, *) {
-            ExtensionButtons(extensions: .shared, edge: edge)
+            ExtensionButtons(extensions: .shared, edge: edge, room: room)
         }
     }
 }
@@ -1599,11 +1602,12 @@ struct ExtensionSlot: View {
 private struct ExtensionButtons: View {
     @ObservedObject var extensions: Extensions
     let edge: Edge
+    var room: Int?
 
     var body: some View {
         if !extensions.installed.isEmpty {
             HStack(spacing: 2) {
-                ForEach(extensions.buttons.filter(\.pinned)) { button in
+                ForEach(extensions.buttons.filter(\.pinned).prefix(room ?? .max)) { button in
                     ActionButton(button: button) { extensions.press(button.id) }
                         .background(Anchor(id: button.id))
                         .contextMenu { ExtensionActions(id: button.id, name: button.name, extensions: extensions) }
