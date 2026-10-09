@@ -29,7 +29,7 @@ enum Web {
     @MainActor static func release(_ controller: WKUserContentController) {
         for name in [ScrollRelay.name, VeilRelay.name, FormRelay.name, ImageRelay.name,
                      StoreRelay.name, PasskeyRelay.name, MiddleRelay.name, IconRelay.name,
-                     CaptureRelay.name, Speed.name] {
+                     CaptureRelay.name, Speed.name, ShieldRelay.name] {
             controller.removeScriptMessageHandler(forName: name, contentWorld: world)
             controller.removeScriptMessageHandler(forName: name, contentWorld: .page)
         }
@@ -685,6 +685,7 @@ final class Tab: ObservableObject, Identifiable {
         // they live in the page's world and are heard from there.
         controller.add(capture, contentWorld: .page, name: CaptureRelay.name)
         controller.add(speed, contentWorld: .page, name: Speed.name)
+        controller.addScriptMessageHandler(ShieldRelay.shared, contentWorld: Web.world, name: ShieldRelay.name)
         Shield.shared.protect(controller)
         built = web
         // A tab muted before it went to sleep wakes muted.

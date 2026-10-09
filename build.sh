@@ -80,11 +80,11 @@ cp Search.sdef "$APP/Contents/Resources/"
 
 # The ad blocker's list compiler (Shield/compiler, Rust, Brave's engine) sits
 # beside the app's own binary; the scriptlet library and the procedural-filter
-# script go in Resources. See Sources/Search/Shield.swift.
+# and generic-filter scripts go in Resources. See Sources/Search/Shield.swift.
 CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 "$CARGO" build --release --quiet --manifest-path Shield/compiler/Cargo.toml
 cp Shield/compiler/target/release/shield-compiler "$APP/Contents/MacOS/shield-compiler"
-cp Shield/resources.json Shield/procedural.js "$APP/Contents/Resources/"
+cp Shield/resources.json Shield/procedural.js Shield/generic.js "$APP/Contents/Resources/"
 # Video Speed Controller's page script, built in (Speed/README.md).
 cp Speed/speed.js Speed/speed.css "$APP/Contents/Resources/"
 
