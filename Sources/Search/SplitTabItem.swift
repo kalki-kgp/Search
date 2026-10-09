@@ -196,6 +196,7 @@ private struct SplitTabHalf: View {
     @ViewBuilder
     private var titleContent: some View {
         if editing {
+            if let site = browser.tabSiteChip { SiteChip(site: site) }
             TabAddressField(browser: browser)
                 .frame(height: 16)
         } else {

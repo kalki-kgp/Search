@@ -29,7 +29,7 @@ enum Web {
     @MainActor static func release(_ controller: WKUserContentController) {
         for name in [ScrollRelay.name, VeilRelay.name, FormRelay.name, ImageRelay.name,
                      StoreRelay.name, PasskeyRelay.name, MiddleRelay.name, IconRelay.name,
-                     CaptureRelay.name, Speed.name] {
+                     CaptureRelay.name, Speed.name, ShieldRelay.name] {
             controller.removeScriptMessageHandler(forName: name, contentWorld: world)
             controller.removeScriptMessageHandler(forName: name, contentWorld: .page)
         }
@@ -685,6 +685,7 @@ final class Tab: ObservableObject, Identifiable {
         // they live in the page's world and are heard from there.
         controller.add(capture, contentWorld: .page, name: CaptureRelay.name)
         controller.add(speed, contentWorld: .page, name: Speed.name)
+        controller.addScriptMessageHandler(ShieldRelay.shared, contentWorld: Web.world, name: ShieldRelay.name)
         Shield.shared.protect(controller)
         built = web
         // A tab muted before it went to sleep wakes muted.
@@ -1582,7 +1583,8 @@ final class MiddleRelay: NSObject, WKScriptMessageHandler {
 
 /// A web view that reads the two-finger swipe for itself.
 final class PageView: WKWebView {
-    /// What extensions added to the right-click menu, at the end of it.
+    /// The page's own right-click menu. WebKit puts extensions' items for the
+    /// page in it itself; Search adding them again showed each one twice.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
         // WebKit names it for a window, but a new window's page arrives here
@@ -1601,13 +1603,6 @@ final class PageView: WKWebView {
             item.target = self
             item.action = #selector(searchSelection(_:))
         }
-        guard #available(macOS 15.4, *),
-              let tab = Browsers.all.lazy.flatMap(\.tabs).first(where: { $0.built === self })
-        else { return }
-        let items = Extensions.shared.menuItems(for: tab)
-        guard !items.isEmpty else { return }
-        menu.addItem(.separator())
-        items.forEach { menu.addItem($0) }
     }
 
     var searchName: (() -> String?)?

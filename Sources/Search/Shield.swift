@@ -10,7 +10,11 @@ import WebKit
 //
 // - Network rules, enforced inside WebKit's networking before a request is
 //   made. Compiled rule lists live in a file WebKit maps from disk.
-// - Cosmetic rules — the ad-shaped holes a blocked ad leaves — likewise.
+// - Cosmetic rules — the ad-shaped holes a blocked ad leaves — likewise,
+//   but for the generic ones that are a single class or id. A rule list
+//   hides whatever such a name matches, a site's own dialog as readily as an
+//   ad; those are looked up in a mapped index for the names a page uses and
+//   hidden by a script that can take one back (Shield/generic.js).
 // - Scriptlets and procedural filters for the sites that need them (YouTube's
 //   ads, anti-adblock walls): looked up per site in a mapped index and put on
 //   that site's page only.
@@ -32,6 +36,7 @@ final class Shield: ObservableObject {
     private var everInstalled: [WKContentRuleList] = []
     private var waiting: [WKUserContentController] = []
     private var sites: SiteIndex?
+    private var generic: GenericIndex?
 
     /// Set when blocking isn't working at all, which is worth telling a
     /// person about rather than failing the quiet way a missing ad is quiet.
@@ -110,8 +115,12 @@ final class Shield: ObservableObject {
             if found.count == manifest.identifiers.count {
                 install(found)
                 sites = SiteIndex(folder: Shield.compiled)
+                generic = GenericIndex(folder: Shield.compiled)
                 describe(manifest)
-                if Date().timeIntervalSince(manifest.updated) > Shield.freshFor { refreshSoon(after: 20) }
+                // Lists compiled before there was a generic index are redone.
+                if Date().timeIntervalSince(manifest.updated) > Shield.freshFor || generic == nil {
+                    refreshSoon(after: 20)
+                }
             } else {
                 fallback()
                 refreshSoon(after: 3)
@@ -188,12 +197,15 @@ final class Shield: ObservableObject {
         waiting = []
     }
 
-    /// This site's scriptlets and procedural filters, for Tab.arm to put on
-    /// the next document. Nothing for a site with none, or where blocking is
-    /// off.
+    /// The generic-rule watcher, and this site's scriptlets and procedural
+    /// filters, for Tab.arm to put on the next document. Nothing where
+    /// blocking is off.
     func scripts(for host: String?) -> [WKUserScript] {
         guard enabled, let host = host?.lowercased(), !host.isEmpty, !isPaused(on: host) else { return [] }
         var out: [WKUserScript] = []
+        if let watcher = generic?.script {
+            out.append(WKUserScript(source: watcher, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Web.world))
+        }
         if host == "www.youtube.com" {
             out.append(WKUserScript(source: Shield.youtubeWall, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
@@ -311,6 +323,28 @@ final class Shield: ObservableObject {
     private static let procedural: String? = Bundle.main.url(forResource: "procedural", withExtension: "js")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
 
+    fileprivate static let genericScript: String? = Bundle.main.url(forResource: "generic", withExtension: "js")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+
+    /// The generic rules for the class names and ids a frame has met, split
+    /// the way generic.js wants them: `f` hidden whatever they match, `p`
+    /// standing down for a site's own writing. `off` where none apply.
+    func generics(classes: [String], ids: [String], frame: String?, page: String?) -> [String: Any] {
+        guard enabled, let generic, !isPaused(on: page), !generic.standsDown(on: frame) else { return ["off": true] }
+        var forced: [String] = []
+        var protected: [String] = []
+        for (mark, names) in [(".", classes), ("#", ids)] {
+            for name in names {
+                switch generic.rule(mark + name, on: frame) {
+                case .forced: forced.append(mark + name)
+                case .protected: protected.append(mark + name)
+                case nil: break
+                }
+            }
+        }
+        return ["f": forced, "p": protected]
+    }
+
     private static func jsString(_ text: String) -> String {
         let data = try? JSONSerialization.data(withJSONObject: [text])
         let array = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
@@ -360,6 +394,7 @@ final class Shield: ObservableObject {
 
             install(fresh)
             sites = SiteIndex(folder: Shield.compiled)
+            generic = GenericIndex(folder: Shield.compiled)
             describe(next)
             trouble = nil
 
@@ -398,15 +433,18 @@ final class Shield: ObservableObject {
         guard let catalog = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw Failure("catalog unreadable")
         }
-        var sources: [(URL, Int)] = []
+        var sources: [(URL, Int, Bool)] = []
         for entry in catalog where entry["default_enabled"] as? Bool == true {
             // Lists for one platform only: Brave's iOS list is kept, for the
             // same engine this runs on; Android's isn't.
             if let platforms = entry["platforms"] as? [String], !platforms.contains("IOS") { continue }
             let permission = entry["permission_mask"] as? Int ?? 0
+            // Brave's word for a list whose generic rules leave a site's own
+            // content alone. The cookie-notice lists don't have it.
+            let protected = entry["first_party_protections"] as? Bool ?? false
             for source in entry["sources"] as? [[String: Any]] ?? [] {
                 if let text = source["url"] as? String, let url = URL(string: text) {
-                    sources.append((url, permission))
+                    sources.append((url, permission, protected))
                 }
             }
         }
@@ -414,7 +452,7 @@ final class Shield: ObservableObject {
 
         var lists: [[String: Any]] = []
         try await withThrowingTaskGroup(of: [String: Any]?.self) { group in
-            for (i, (url, permission)) in sources.enumerated() {
+            for (i, (url, permission, protected)) in sources.enumerated() {
                 group.addTask {
                     var request = URLRequest(url: url, timeoutInterval: 60)
                     request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
@@ -424,7 +462,7 @@ final class Shield: ObservableObject {
                     let target = Shield.downloads.appendingPathComponent("\(i).txt")
                     try? FileManager.default.removeItem(at: target)
                     guard (try? FileManager.default.moveItem(at: temp, to: target)) != nil else { return nil }
-                    return ["path": target.path, "permission": permission]
+                    return ["path": target.path, "permission": permission, "protected": protected]
                 }
             }
             for try await list in group { if let list { lists.append(list) } }
@@ -640,43 +678,114 @@ private struct SiteIndex {
         )
     }
 
-    /// Binary search over sorted `key<TAB>offset<TAB>length` lines.
     private func slice(_ key: String) -> Data? {
-        let wanted = Array(key.utf8)
-        let found: (Int, Int)? = index.withUnsafeBytes { raw in
-            let b = raw.bindMemory(to: UInt8.self)
-            var lo = 0, hi = b.count
-            while lo < hi {
-                let mid = (lo + hi) / 2
-                var start = mid
-                while start > lo, b[start - 1] != 10 { start -= 1 }
-                var tab = start
-                while tab < b.count, b[tab] != 9, b[tab] != 10 { tab += 1 }
-                var end = tab
-                while end < b.count, b[end] != 10 { end += 1 }
-
-                var order = 0
-                let length = tab - start
-                for j in 0..<min(length, wanted.count) where b[start + j] != wanted[j] {
-                    order = b[start + j] < wanted[j] ? -1 : 1
-                    break
-                }
-                if order == 0 { order = length < wanted.count ? -1 : length > wanted.count ? 1 : 0 }
-
-                if order == 0 {
-                    let fields = String(decoding: UnsafeBufferPointer(rebasing: b[(tab + 1)..<end]), as: UTF8.self)
-                        .split(separator: "\t")
-                    guard fields.count == 2, let offset = Int(fields[0]), let count = Int(fields[1]) else { return nil }
-                    return (offset, count)
-                } else if order < 0 {
-                    lo = end + 1
-                } else {
-                    hi = start
-                }
-            }
-            return nil
-        }
-        guard let (offset, count) = found, offset + count <= data.count else { return nil }
+        guard let fields = sortedLine(key, in: index), fields.count == 2,
+              let offset = Int(fields[0]), let count = Int(fields[1]), offset + count <= data.count
+        else { return nil }
         return data.subdata(in: offset..<(offset + count))
+    }
+}
+
+/// `generic.idx`, mapped: the generic rules that are one class or one id,
+/// and the sites none of them apply on. `generic.bloom` — which names it has
+/// at all — goes to the page inside the script, so a page asks about a
+/// handful of its names and not every one.
+private struct GenericIndex {
+    let index: Data
+    /// generic.js, with this set of lists' filter in it.
+    let script: String
+
+    enum Rule { case forced, protected }
+
+    init?(folder: URL) {
+        guard let index = try? Data(contentsOf: folder.appendingPathComponent("generic.idx"), options: .alwaysMapped),
+              let bloom = try? Data(contentsOf: folder.appendingPathComponent("generic.bloom")),
+              let source = Shield.genericScript
+        else { return nil }
+        self.index = index
+        script = source.replacingOccurrences(of: "/*BLOOM*/''", with: "'\(bloom.base64EncodedString())'")
+    }
+
+    /// `.name` or `#name`, unless a list excepts this host from it.
+    func rule(_ selector: String, on host: String?) -> Rule? {
+        guard let fields = sortedLine(selector, in: index), let kind = fields.first else { return nil }
+        if fields.count > 1, let host, !fields[1].isEmpty {
+            for exempt in fields[1].split(separator: ",") where host == exempt || host.hasSuffix("." + exempt) {
+                return nil
+            }
+        }
+        return kind == "f" ? .forced : .protected
+    }
+
+    /// `$generichide` or `$elemhide` for this host or one above it.
+    func standsDown(on host: String?) -> Bool {
+        guard let host, !host.isEmpty else { return false }
+        let labels = host.split(separator: ".")
+        for i in 0..<max(labels.count - 1, 1) {
+            if sortedLine("@" + labels[i...].joined(separator: "."), in: index) != nil { return true }
+        }
+        return false
+    }
+}
+
+/// Binary search over sorted `key<TAB>field<TAB>field` lines: the fields of
+/// the line with this key.
+private func sortedLine(_ key: String, in index: Data) -> [Substring]? {
+    let wanted = Array(key.utf8)
+    let found: String? = index.withUnsafeBytes { raw in
+        let b = raw.bindMemory(to: UInt8.self)
+        var lo = 0, hi = b.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            var start = mid
+            while start > lo, b[start - 1] != 10 { start -= 1 }
+            var tab = start
+            while tab < b.count, b[tab] != 9, b[tab] != 10 { tab += 1 }
+            var end = tab
+            while end < b.count, b[end] != 10 { end += 1 }
+
+            var order = 0
+            let length = tab - start
+            for j in 0..<min(length, wanted.count) where b[start + j] != wanted[j] {
+                order = b[start + j] < wanted[j] ? -1 : 1
+                break
+            }
+            if order == 0 { order = length < wanted.count ? -1 : length > wanted.count ? 1 : 0 }
+
+            if order == 0 {
+                guard tab < end else { return "" }
+                return String(decoding: UnsafeBufferPointer(rebasing: b[(tab + 1)..<end]), as: UTF8.self)
+            } else if order < 0 {
+                lo = end + 1
+            } else {
+                hi = start
+            }
+        }
+        return nil
+    }
+    guard let found else { return nil }
+    return found.split(separator: "\t", omittingEmptySubsequences: false)
+}
+
+/// generic.js asking, from any frame: the class names and ids it has met.
+final class ShieldRelay: NSObject, WKScriptMessageHandlerWithReply {
+    static let name = "searchShield"
+    @MainActor static let shared = ShieldRelay()
+
+    func userContentController(
+        _ controller: WKUserContentController,
+        didReceive message: WKScriptMessage,
+        replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void
+    ) {
+        MainActor.assumeIsolated {
+            guard let body = message.body as? [String: Any] else { return replyHandler(["off": true], nil) }
+            let page = message.webView?.url?.host()?.lowercased()
+            replyHandler(Shield.shared.generics(
+                classes: body["c"] as? [String] ?? [],
+                ids: body["i"] as? [String] ?? [],
+                frame: message.frameInfo.securityOrigin.host.lowercased(),
+                page: page.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 }
+            ), nil)
+        }
     }
 }

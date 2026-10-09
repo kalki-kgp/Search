@@ -7,6 +7,14 @@
 //!   enforces these inside its own networking, before a request is made.
 //! - `cosmetic-N.json`: content rule lists that hide elements, generic and
 //!   per-site, with `#@#` exceptions and `$generichide` honoured.
+//! - `generic.idx`: the generic rules that are one class or one id — most of
+//!   them — kept out of the rule list. A rule list hides whatever matches,
+//!   for good; Search's page script (Shield/generic.js) asks this index
+//!   about the names a page really uses, and can take a rule back when what
+//!   it hid turns out to be the page's own.
+//! - `generic.bloom`: which names are in that index at all, as a Bloom
+//!   filter the script carries, so a page's thousands of other names are
+//!   never sent anywhere.
 //! - `sites.idx` + `sites.dat`: the per-site part a rule list can't express — scriptlets
 //!   (`##+js(...)`) and procedural filters (`:has-text`, `:upward`,
 //!   `:remove`...) — keyed by host, worked out with Brave's own engine so
@@ -14,8 +22,8 @@
 //!
 //! Usage: shield-compiler <job.json>
 //!
-//! job.json: { "lists": [{"path": "...", "permission": 1}], "resources":
-//! "resources.json", "out": "dir" }
+//! job.json: { "lists": [{"path": "...", "permission": 1, "protected": true}],
+//! "resources": "resources.json", "out": "dir" }
 
 use adblock::content_blocking::{CbAction, CbRule, CbTrigger, CbType};
 use adblock::filters::cosmetic::{CosmeticFilter, CosmeticFilterMask};
@@ -46,6 +54,17 @@ struct ListIn {
     path: PathBuf,
     #[serde(default)]
     permission: u8,
+    /// Brave's `first_party_protections`: a list whose generic rules stand
+    /// down for a site's own content. The cookie-notice lists aren't.
+    #[serde(default)]
+    protected: bool,
+}
+
+/// A list's text, and what the catalog says of it.
+struct List {
+    text: String,
+    permissions: PermissionMask,
+    protected: bool,
 }
 
 #[derive(Serialize, Default)]
@@ -75,6 +94,7 @@ struct Summary {
     cosmetic_files: usize,
     cosmetic_rules: usize,
     generic_selectors: usize,
+    scripted_selectors: usize,
     specific_selectors: usize,
     script_sites: usize,
     procedural_sites: usize,
@@ -90,19 +110,21 @@ fn main() {
     if let Ok(dir) = std::fs::read_dir(&job.out) {
         for entry in dir.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".json") || name.starts_with("sites.") {
+            if name.ends_with(".json") || name.starts_with("sites.") || name.starts_with("generic.") {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
 
-    let texts: Vec<(String, PermissionMask)> = job
+    let texts: Vec<List> = job
         .lists
         .iter()
         .filter_map(|l| {
-            std::fs::read_to_string(&l.path)
-                .ok()
-                .map(|t| (t, PermissionMask::from_bits(l.permission)))
+            std::fs::read_to_string(&l.path).ok().map(|text| List {
+                text,
+                permissions: PermissionMask::from_bits(l.permission),
+                protected: l.protected,
+            })
         })
         .collect();
 
@@ -121,12 +143,12 @@ fn main() {
 
 // MARK: - network
 
-fn network(texts: &[(String, PermissionMask)], out: &Path, summary: &mut Summary) {
+fn network(texts: &[List], out: &Path, summary: &mut Summary) {
     let mut set = FilterSet::new(true);
-    for (text, permissions) in texts {
+    for list in texts {
         set.add_filter_list(
-            text.clone(),
-            ParseOptions { rule_types: RuleTypes::NetworkOnly, permissions: *permissions, ..Default::default() },
+            list.text.clone(),
+            ParseOptions { rule_types: RuleTypes::NetworkOnly, permissions: list.permissions, ..Default::default() },
         );
     }
     let (rules, _) = set.into_content_blocking().expect("debug filter set");
@@ -181,30 +203,45 @@ fn locations(raw: &str) -> Where {
     w
 }
 
-fn cosmetic_filters(texts: &[(String, PermissionMask)]) -> Vec<CosmeticFilter> {
+/// Every cosmetic filter, and whether the list it came from is a protected
+/// one.
+fn cosmetic_filters(texts: &[List]) -> Vec<(CosmeticFilter, bool)> {
     let mut all = vec![];
-    for (text, permissions) in texts {
+    for list in texts {
         let opts = ParseOptions {
             rule_types: RuleTypes::CosmeticOnly,
-            permissions: *permissions,
+            permissions: list.permissions,
             ..Default::default()
         };
-        for line in text.lines() {
+        for line in list.text.lines() {
             if let Ok(ParsedLine::Cosmetic(f)) = parse_filter(line, true, opts) {
-                all.push(f);
+                all.push((f, list.protected));
             }
         }
     }
     all
 }
 
+/// `.name` or `#name` and nothing else: what a page can be asked about by
+/// the names it uses, and what always parses as CSS.
+fn plain(selector: &str) -> bool {
+    let mut chars = selector.chars();
+    if !matches!(chars.next(), Some('.' | '#')) {
+        return false;
+    }
+    let name = chars.as_str();
+    let start = name.strip_prefix('-').unwrap_or(name);
+    start.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Hosts a `$generichide` / `$elemhide` exception switches cosmetic
 /// filtering off for — generic rules only, or everything.
-fn hide_exceptions(texts: &[(String, PermissionMask)]) -> (BTreeSet<String>, BTreeSet<String>) {
+fn hide_exceptions(texts: &[List]) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut generic = BTreeSet::new();
     let mut all = BTreeSet::new();
-    for (text, _) in texts {
-        for line in text.lines() {
+    for list in texts {
+        for line in list.text.lines() {
             let Some(rest) = line.trim().strip_prefix("@@||") else { continue };
             let Some(dollar) = rest.rfind('$') else { continue };
             let host = rest[..dollar].trim_end_matches('^').trim_end_matches('/');
@@ -227,14 +264,14 @@ fn hide_exceptions(texts: &[(String, PermissionMask)]) -> (BTreeSet<String>, BTr
     (generic, all)
 }
 
-fn cosmetic(texts: &[(String, PermissionMask)], out: &Path, summary: &mut Summary) {
+fn cosmetic(texts: &[List], out: &Path, summary: &mut Summary) {
     let filters = cosmetic_filters(texts);
     let (generichide, elemhide) = hide_exceptions(texts);
 
     // selector -> hosts it is un-hidden on (`example.com#@#.ad`); an empty
     // set means un-hidden everywhere, i.e. the generic rule is withdrawn.
     let mut unhidden: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for f in &filters {
+    for (f, _) in &filters {
         if !f.mask.contains(CosmeticFilterMask::UNHIDE) || f.mask.contains(CosmeticFilterMask::SCRIPT_INJECT) {
             continue;
         }
@@ -248,8 +285,11 @@ fn cosmetic(texts: &[(String, PermissionMask)], out: &Path, summary: &mut Summar
     let mut generic: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     // Specific: selector -> hosts it applies on.
     let mut specific: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // Generic selectors some list hides whatever they turn out to match:
+    // one list that isn't protected is enough.
+    let mut forced: BTreeSet<String> = BTreeSet::new();
 
-    for f in &filters {
+    for (f, protected) in &filters {
         if f.mask.contains(CosmeticFilterMask::UNHIDE)
             || f.mask.contains(CosmeticFilterMask::SCRIPT_INJECT)
             || f.action.is_some()
@@ -266,6 +306,9 @@ fn cosmetic(texts: &[(String, PermissionMask)], out: &Path, summary: &mut Summar
             // Un-hidden with no host at all: withdrawn everywhere.
             if exempt.is_some_and(|e| e.is_empty()) {
                 continue;
+            }
+            if !protected {
+                forced.insert(sel.to_string());
             }
             let entry = generic.entry(sel.to_string()).or_default();
             entry.extend(w.not_hosts);
@@ -285,6 +328,25 @@ fn cosmetic(texts: &[(String, PermissionMask)], out: &Path, summary: &mut Summar
     }
     summary.generic_selectors = generic.len();
     summary.specific_selectors = specific.len();
+
+    // The plain ones go to the page script's index; a rule list keeps the
+    // rest. One sorted line each — `selector<TAB>p|f<TAB>hosts it stands
+    // down on` — and `@host` for a site where none of them apply at all.
+    let (scripted, generic): (BTreeMap<_, _>, BTreeMap<_, _>) =
+        generic.into_iter().partition(|(sel, _)| plain(sel));
+    summary.scripted_selectors = scripted.len();
+    let mut lines: Vec<String> = scripted
+        .iter()
+        .map(|(sel, exempt)| {
+            let kind = if forced.contains(sel) { 'f' } else { 'p' };
+            let hosts: Vec<&str> = exempt.iter().map(String::as_str).collect();
+            format!("{sel}\t{kind}\t{}", hosts.join(","))
+        })
+        .collect();
+    std::fs::write(out.join("generic.bloom"), bloom(scripted.keys())).unwrap();
+    lines.extend(generichide.union(&elemhide).map(|host| format!("@{host}\t\t")));
+    lines.sort_by(|a, b| key(a).cmp(key(b)));
+    std::fs::write(out.join("generic.idx"), lines.join("\n") + "\n").unwrap();
 
     let mut rules: Vec<CbRule> = vec![];
 
@@ -326,6 +388,35 @@ fn cosmetic(texts: &[(String, PermissionMask)], out: &Path, summary: &mut Summar
     }
 }
 
+/// 2^18 bits, six to a name: one name in a hundred that isn't listed passes,
+/// and is asked about for nothing. generic.js reads it the same way — the
+/// two hashes, the mark (`.` or `#`) first — and both must change together.
+const BLOOM_BITS: u32 = 1 << 18;
+const BLOOM_HASHES: u32 = 6;
+
+fn bloom<'a>(selectors: impl Iterator<Item = &'a String>) -> Vec<u8> {
+    let mut bits = vec![0u8; (BLOOM_BITS / 8) as usize];
+    for selector in selectors {
+        let (mut a, mut b) = (2166136261u32, 0x9747b28cu32);
+        for c in selector.bytes().map(u32::from) {
+            a = (a ^ c).wrapping_mul(16777619);
+            b = (b ^ c).wrapping_mul(0x5bd1e995);
+            b ^= b >> 15;
+        }
+        b |= 1;
+        for k in 0..BLOOM_HASHES {
+            let at = a.wrapping_add(k.wrapping_mul(b)) & (BLOOM_BITS - 1);
+            bits[(at >> 3) as usize] |= 1 << (at & 7);
+        }
+    }
+    bits
+}
+
+/// What an index line is sorted and found by.
+fn key(line: &str) -> &[u8] {
+    line.split('\t').next().unwrap_or(line).as_bytes()
+}
+
 /// `*example.com`: the site and everything under it, which is what a host in
 /// a filter list means.
 fn wildcard(hosts: &BTreeSet<String>) -> Vec<String> {
@@ -357,10 +448,10 @@ fn stand_down(hosts: &BTreeSet<String>) -> CbRule {
 
 // MARK: - per-site scripts
 
-fn sites(texts: &[(String, PermissionMask)], resources: &Path, out: &Path, summary: &mut Summary) {
+fn sites(texts: &[List], resources: &Path, out: &Path, summary: &mut Summary) {
     // Which sites have anything a rule list can't do.
     let mut hosts: BTreeSet<String> = BTreeSet::new();
-    for f in cosmetic_filters(texts) {
+    for (f, _) in cosmetic_filters(texts) {
         if f.mask.contains(CosmeticFilterMask::UNHIDE) {
             continue;
         }
@@ -378,8 +469,8 @@ fn sites(texts: &[(String, PermissionMask)], resources: &Path, out: &Path, summa
     // Brave's engine, with every list and every scriptlet, asked site by
     // site what it would put on the page.
     let mut set = FilterSet::new(false);
-    for (text, permissions) in texts {
-        set.add_filter_list(text.clone(), ParseOptions { permissions: *permissions, ..Default::default() });
+    for list in texts {
+        set.add_filter_list(list.text.clone(), ParseOptions { permissions: list.permissions, ..Default::default() });
     }
     let mut engine = Engine::new_with_filter_set(set);
     let library: Vec<Resource> =

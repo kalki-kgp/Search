@@ -382,7 +382,9 @@ struct SettingsPanel: View {
                 Line(
                     "Offer passkeys",
                     !prefs.passkeysPossible
-                        ? "Needs an Apple entitlement this build doesn't have — off keeps sites to the password"
+                        ? "Needs an Apple entitlement this build doesn't have, or a browser like Brave that does"
+                        : Passkeys.lent
+                        ? "Your iCloud Keychain passkeys, signed through \(Lender.browser?.name ?? "") behind the scenes"
                         : Passkeys.access == .denied
                         ? "macOS was told no — System Settings › Privacy & Security › Passkeys Access for Web Browsers"
                         : "Touch ID or an iCloud passkey, on sites that offer one"
@@ -467,7 +469,7 @@ struct SettingsPanel: View {
                     Switch(on: Binding(get: { !prefs.keepsSignIns }, set: { prefs.keepsSignIns = !$0 }))
                 }
                 Rule()
-                Line("Camera, microphone, location and notifications", "What each site was allowed or refused") {
+                Line("Camera, microphone, location and notifications", "What each site was allowed or refused, and the sites whose videos don't float") {
                     Pill("Forget choices") { browser.forgetCaptureChoices() }
                 }
                 Rule()

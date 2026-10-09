@@ -116,24 +116,31 @@ struct Omnibox: View {
             }
     }
 
-    /// What it thinks you mean. Places you have been come with their titles;
-    /// the handful of well-known addresses it starts life knowing come without
-    /// the weight of one.
-    ///
-    /// It lives below the field, in an overlay, so arriving or leaving never
-    /// moves the field — and the transition that carried it in and out before
-    /// is kept, only anchored to its own top edge.
     private var list: some View {
+        AddressSuggestions(offers: browser.offers, picked: browser.picked, site: browser.siteOffer,
+                           take: browser.take, lockSite: { _ = browser.lockSiteOffer() })
+    }
+}
+
+/// Shared by the new-tab field and the address edited inside a tab.
+struct AddressSuggestions: View {
+    let offers: [Suggestion]
+    let picked: Int?
+    var site: SearchSite?
+    let take: (Suggestion) -> Void
+    let lockSite: () -> Void
+
+    var body: some View {
         VStack(spacing: 0) {
-            if let site = browser.siteOffer {
+            if let site {
                 SiteOfferRow(site: site)
                     .contentShape(Rectangle())
-                    .onTapGesture { _ = browser.lockSiteOffer() }
+                    .onTapGesture(perform: lockSite)
             }
-            ForEach(Array(browser.offers.enumerated()), id: \.element.id) { index, offer in
-                Row(offer: offer, picked: browser.picked == index)
+            ForEach(Array(offers.enumerated()), id: \.element.id) { index, offer in
+                Row(offer: offer, picked: picked == index)
                     .contentShape(Rectangle())
-                    .onTapGesture { browser.take(offer) }
+                    .onTapGesture { take(offer) }
             }
         }
         .padding(6)
@@ -243,7 +250,7 @@ private struct SiteIcon: View {
 
 /// The site Tab put in the field: its icon and name, in the field's grey,
 /// before what is typed.
-private struct SiteChip: View {
+struct SiteChip: View {
     let site: SearchSite
     var body: some View {
         HStack(spacing: 6) {
