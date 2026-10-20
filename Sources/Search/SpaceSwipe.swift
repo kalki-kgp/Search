@@ -3,7 +3,8 @@ import SwiftUI
 // Spaces, paged through: in the column, two fingers sideways go from one to
 // the next, the rows following them, as in Arc; in the bar across the top,
 // the same up and down, the row of tabs following them — or a mouse wheel's
-// notch, one space at a time. Past the last space a new one is made in
+// notch, one space at a time, or the mouse's back and forward buttons with
+// the pointer over the tabs. Past the last space a new one is made in
 // place. The space's icon turns over as it goes (see SpaceDot).
 
 /// The swipe between spaces. It reads the trackpad's own scroll events
@@ -17,6 +18,7 @@ final class SpaceSwipe {
 
     private weak var browser: Browser?
     private var monitor: Any?
+    private var buttons: Any?
     private enum Axis { case undecided, across, along }
     private var axis = Axis.undecided
     private var tracking = false
@@ -49,6 +51,36 @@ final class SpaceSwipe {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
             MainActor.assumeIsolated { SpaceSwipe.shared.takes(event) } ? nil : event
         }
+        buttons = NSEvent.addLocalMonitorForEvents(matching: [.otherMouseDown, .swipe]) { event in
+            MainActor.assumeIsolated { SpaceSwipe.shared.pressed(event) } ? nil : event
+        }
+    }
+
+    /// The mouse's back and forward buttons over the tabs: the space before,
+    /// or the one after. Over the page they stay the page's back and forward
+    /// (PageView.otherMouseDown). Past the last space, as with the wheel,
+    /// the card for a new one.
+    ///
+    /// Most mice send them as buttons 3 and 4. A Logitech mouse set up with
+    /// Logi Options+, Logitech's own driver, doesn't: it turns them into the
+    /// swipe a trackpad sends for going back or forward a page — deltaX 1
+    /// for back, -1 for forward, which is how Safari reads it. A swipe of
+    /// that kind over the tabs is taken the same way, whoever sends it.
+    private func pressed(_ event: NSEvent) -> Bool {
+        let step: Int
+        switch event.type {
+        case .otherMouseDown where event.buttonNumber == 3: step = -1
+        case .otherMouseDown where event.buttonNumber == 4: step = 1
+        case .swipe where event.deltaX != 0: step = event.deltaX > 0 ? -1 : 1
+        default: return false
+        }
+        guard let browser = Browsers.browser(for: event.window), browser.extensionPopup == nil, browser.prefs.usesSpaces,
+              !browser.folded || browser.peeking, overTabs(event, in: browser) else { return false }
+        self.browser = browser
+        let here = browser.makingSpace ? browser.spaces.count : (browser.spaces.firstIndex { $0.id == browser.spaceID } ?? 0)
+        let target = here + step
+        if target >= 0, target <= browser.spaces.count { slide(browser, to: target, from: here) }
+        return true
     }
 
     /// Where the tabs are: the column, or the bar across the top.
