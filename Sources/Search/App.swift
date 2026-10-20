@@ -73,6 +73,8 @@ struct SearchApp: App {
                 Divider()
                 Button("Close Tab") { browser.closeFront() }
                     .shortcut("file.closeTab")
+                Button("Close Window") { browser.closeWindow() }
+                    .shortcut("file.closeWindow")
             }
             CommandGroup(replacing: .printItem) {
                 Button("Share…") { browser.share() }
@@ -1045,7 +1047,7 @@ struct ContentView: View {
     /// them to scroll the page sideways and never hands them back, so
     /// passing them on left them dead for going back and forward (#324).
     private func pageFirst(_ event: NSEvent, key: String, shifted: Bool) -> Bool {
-        let reserved = (key == "t") || (key == "w" && !shifted) || (key == "n" && shifted)
+        let reserved = (key == "t") || (key == "w") || (key == "n" && shifted)
             || ((key == "[" || key == "]" || key == "{" || key == "}") && shifted)
             || (key == "z" && browser.veiling)
             || (key == "k" && !shifted)
@@ -1403,6 +1405,8 @@ struct ContentView: View {
             browser.resetZoom()
         case "w" where !shifted:
             browser.closeFront()
+        case "w" where shifted:
+            browser.closeWindow()
         case "l" where !shifted:
             browser.edit()
         case "r" where !shifted:

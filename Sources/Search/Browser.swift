@@ -2771,6 +2771,11 @@ final class Browser: NSObject, ObservableObject {
         else if let tab = active { close(tab) }
     }
 
+    /// ⇧⌘W: the whole window, its tabs with it, as the red button closes it.
+    func closeWindow() {
+        window?.performClose(nil)
+    }
+
     /// The panel over the page put away, if one is up — for ⌘W and Escape
     /// both. Whether there was one.
     func closePanel() -> Bool {
