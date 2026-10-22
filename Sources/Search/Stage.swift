@@ -35,7 +35,11 @@ struct Page: View {
                 Image(nsImage: cover)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    // No smaller than nothing: a picture taken in a window of
+                    // another shape would otherwise ask for its own size, and
+                    // push the column aside until the page woke (#664).
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                           alignment: .topLeading)
                     .clipped()
                     .allowsHitTesting(false)
                     .transition(.opacity)
