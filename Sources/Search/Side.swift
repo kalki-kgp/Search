@@ -36,7 +36,9 @@ struct SideBar: View {
 
     /// The window's buttons' corner: gone in full screen, where macOS takes
     /// them away, and back, forward and reload move up to the edge (idea 184).
-    private var lights: CGFloat { browser.fullScreen ? 0 : Metrics.sideLights }
+    private var lights: CGFloat {
+        browser.fullScreen ? 0 : max(0, min(Metrics.sideLights, prefs.sideWidth - 20 - Metrics.helmDoors))
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
