@@ -1884,6 +1884,27 @@ final class PageView: WKWebView {
             item.target = self
             item.action = #selector(openLinkBehind(_:))
         }
+        // Copy Clean Link (#594): under WebKit's Copy Link, the same link
+        // without its tracking parameters. On the page itself, under Reload,
+        // only when the page's own address has some, as Safari does.
+        if let index = menu.items.firstIndex(where: { $0.identifier?.rawValue == "WKMenuItemIdentifierCopyLink" }) {
+            let item = menu.items[index]
+            if let clean = item.copy() as? NSMenuItem {
+                copyLink = (item.target, item.action)
+                clean.title = "Copy Clean Link"
+                clean.identifier = NSUserInterfaceItemIdentifier("SearchCopyCleanLink")
+                clean.target = self
+                clean.action = #selector(copyCleanLink(_:))
+                menu.insertItem(clean, at: index + 1)
+            }
+        } else if let url, CleanLink.clean(url) != url,
+                  let index = menu.items.firstIndex(where: { $0.identifier?.rawValue == "WKMenuItemIdentifierReload" }) {
+            let clean = NSMenuItem(title: "Copy Clean Link", action: #selector(copyCleanPage(_:)), keyEquivalent: "")
+            clean.identifier = NSUserInterfaceItemIdentifier("SearchCopyCleanLink")
+            clean.target = self
+            clean.representedObject = url
+            menu.insertItem(clean, at: index + 1)
+        }
         // The bench's linkmenu: the item it names is chosen as the menu
         // comes up, the way a hand would choose it, and the menu goes.
         if Store.testing, let title = PageView.picking {
@@ -1954,6 +1975,21 @@ final class PageView: WKWebView {
     func takeBehind() -> Bool {
         defer { behindSince = nil }
         return behindSince.map { Date().timeIntervalSince($0) < 1 } ?? false
+    }
+
+    /// WebKit's Copy Link, for Copy Clean Link to clean what it copies.
+    private var copyLink: (target: AnyObject?, action: Selector?) = (nil, nil)
+
+    @objc private func copyCleanLink(_ item: NSMenuItem) {
+        guard let action = copyLink.action else { return }
+        let count = NSPasteboard.general.changeCount
+        NSApp.sendAction(action, to: copyLink.target, from: item)
+        CleanLink.rewrite(since: count)
+    }
+
+    @objc private func copyCleanPage(_ item: NSMenuItem) {
+        guard let url = item.representedObject as? URL else { return }
+        CleanLink.copy(url)
     }
 
     @objc private func searchSelection(_ item: NSMenuItem) {

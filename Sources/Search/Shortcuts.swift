@@ -161,6 +161,7 @@ struct Command: Identifiable {
         Command("edit.find", "Find on Page…", .edit, KeyCombo("f")) { $0.openFind() },
         Command("edit.findNext", "Find Next", .edit, KeyCombo("g")) { $0.look(forward: true) },
         Command("edit.findPrevious", "Find Previous", .edit, KeyCombo("g", shift: true)) { $0.look(forward: false) },
+        Command("edit.copyCleanLink", "Copy Clean Link", .edit, KeyCombo("c", shift: true, option: true)) { $0.copyCleanLink() },
 
         Command("view.sidebar", "Show Tabs in Sidebar", .view, KeyCombo("s", shift: true)) { $0.toggleSidebar() },
         Command("view.fold", "Hide Sidebar or Tab Bar", .view, KeyCombo("s")) { $0.toggleFold() },

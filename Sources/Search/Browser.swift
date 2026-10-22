@@ -1479,6 +1479,13 @@ final class Browser: NSObject, ObservableObject {
         announce("Address copied")
     }
 
+    /// ⌥⇧⌘C. The address without its tracking parameters (CleanLink).
+    func copyCleanLink() {
+        guard let url = active?.address else { return }
+        CleanLink.copy(url)
+        announce("Clean link copied")
+    }
+
     /// For pasting into notes and messages that read Markdown: a title that
     /// links, not a bare address to explain in your own words.
     func copyMarkdownLink() {

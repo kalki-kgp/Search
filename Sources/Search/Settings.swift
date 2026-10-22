@@ -540,7 +540,7 @@ struct SettingsPanel: View {
                 Rule()
                 Shortcut("⇧⌘V", "Paste and go")
                 Rule()
-                Shortcut("⇧⌘C", "Copy address")
+                Shortcut("⇧⌘C  ⌥⇧⌘C", "Copy address, a clean link")
                 Rule()
                 Shortcut("⌃⇥  ⌘1–9", "Next tab, a tab by its place")
                 Rule()
