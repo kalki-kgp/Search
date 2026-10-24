@@ -2358,10 +2358,13 @@ final class Browser: NSObject, ObservableObject {
                 listed: tab.pin != nil && tab.listed ? true : nil
             ))
         }
-        // The tab you were on isn't kept — a private or blank one: the one
-        // kept just before it comes back in front, not the first of the row.
+        // The tab you were on isn't kept — a private one: the one kept just
+        // before it comes back in front, not the first of the row. An empty
+        // one stays an empty one, beside the pins (see frontBlank): the tab
+        // just before it is the last of the row, often the last page of a
+        // folded group, which then came out of its folder in front.
         if let id, let at = tabs.firstIndex(where: { $0.id == id }), indices[id] == nil {
-            active = max(0, tabs[..<at].filter(kept).count - 1)
+            active = tabs[at].isBlank && !tabs[at].shy ? -1 : max(0, tabs[..<at].filter(kept).count - 1)
         }
         let keptGroups = groups?.filter { group in
             entries.contains { $0.groupID == group.id }
