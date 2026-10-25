@@ -3286,6 +3286,22 @@ final class Browser: NSObject, ObservableObject {
         writeSession(now: true)
     }
 
+    /// Fold All Groups / Unfold All Groups, in the space's menu and the View
+    /// menu, as in Arc: every group of the space on screen at once, each
+    /// keeping its tabs and its place. A folded group still shows the tab in
+    /// front if that is one of its own, as one folded by hand does.
+    func foldAllGroups(_ fold: Bool) {
+        guard tabGroups.contains(where: { $0.collapsed != fold }) else { return }
+        for index in tabGroups.indices where tabGroups[index].collapsed != fold {
+            tabGroups[index].collapsed = fold
+        }
+        writeSession(now: true)
+    }
+
+    /// Whether Fold All Groups or Unfold All Groups has anything to do.
+    var canFoldAllGroups: Bool { prefs.usesTabGroups && tabGroups.contains { !$0.collapsed } }
+    var canUnfoldAllGroups: Bool { prefs.usesTabGroups && tabGroups.contains { $0.collapsed } }
+
     func removeTabGroup(_ id: UUID) {
         guard tabGroups.contains(where: { $0.id == id }) else { return }
         for tab in tabs where tab.groupID == id { tab.groupID = nil }

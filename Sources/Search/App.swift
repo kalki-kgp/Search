@@ -116,6 +116,13 @@ struct SearchApp: App {
                         Text(glyph.title).tag(glyph)
                     }
                 }
+                // Every group of the space on screen, folded or opened at once.
+                Button("Fold All Groups") { browser.foldAllGroups(true) }
+                    .shortcut("view.foldGroups")
+                    .disabled(!browser.canFoldAllGroups)
+                Button("Unfold All Groups") { browser.foldAllGroups(false) }
+                    .shortcut("view.unfoldGroups")
+                    .disabled(!browser.canUnfoldAllGroups)
                 Divider()
                 Button("Reload Page") { browser.reload() }
                     .shortcut("view.reload")
