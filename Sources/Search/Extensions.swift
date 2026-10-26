@@ -266,7 +266,15 @@ final class Extensions: NSObject, ObservableObject {
 
     private func forgetWorkersIfChanged() async {
         guard Store.settings.string(forKey: Extensions.workersKey) != workers else { return }
-        await Store.websites.removeData(ofTypes: [WKWebsiteDataTypeServiceWorkerRegistrations], modifiedSince: .distantPast)
+        // With no extension there is no stale copy to clear, only the sites'
+        // own workers to lose. The list holds the shim's version, which
+        // changes with nearly every update, so every update cost everyone
+        // the workers of Google Docs, Gmail, X, YouTube…: each site started
+        // from the network again and registered and filled its worker anew,
+        // and the first days after an update felt slower (idea 446).
+        if !installed.isEmpty {
+            await Store.websites.removeData(ofTypes: [WKWebsiteDataTypeServiceWorkerRegistrations], modifiedSince: .distantPast)
+        }
         Store.settings.set(workers, forKey: Extensions.workersKey)
     }
 
