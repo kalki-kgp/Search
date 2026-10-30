@@ -29,7 +29,7 @@ enum Web {
     @MainActor static func release(_ controller: WKUserContentController) {
         for name in [ScrollRelay.name, VeilRelay.name, FormRelay.name, ImageRelay.name,
                      StoreRelay.name, PasskeyRelay.name, MiddleRelay.name, IconRelay.name,
-                     CaptureRelay.name, Speed.name, ShieldRelay.name] {
+                     CaptureRelay.name, Speed.name, ShieldRelay.name, TranslateRelay.name] {
             controller.removeScriptMessageHandler(forName: name, contentWorld: world)
             controller.removeScriptMessageHandler(forName: name, contentWorld: .page)
         }
@@ -307,6 +307,26 @@ final class Tab: ObservableObject, Identifiable {
             held = nil
             address = url
         }
+        // Translating stays on from page to page (see Translate.swift).
+        if translatesImages { built?.evaluateJavaScript(ImageTranslation.script, in: nil, in: Web.world) }
+    }
+
+    /// Translate Images in This Tab, from the permissions corner.
+    private(set) var translatesImages = false
+    private(set) var imageTranslation: ImageTranslation?
+
+    func translateImages(_ on: Bool) {
+        guard on != translatesImages else { return }
+        translatesImages = on
+        if on {
+            imageTranslation = ImageTranslation(tab: self)
+            if #available(macOS 15.0, *) { Translator.shared.forgetRefusals() }
+            built?.evaluateJavaScript(ImageTranslation.script, in: nil, in: Web.world)
+        } else {
+            imageTranslation?.stop()
+            imageTranslation = nil
+            built?.evaluateJavaScript(ImageTranslation.off, in: nil, in: Web.world)
+        }
     }
 
     /// An address the tab shows, and reports to extensions, without loading
@@ -530,6 +550,7 @@ final class Tab: ObservableObject, Identifiable {
     private let hovered = HoveredLink()
     private let capture = CaptureRelay()
     private let speed = Speed.Relay()
+    private let translate = TranslateRelay()
     private let ears = AudioWatch()
 
     /// A tab that keeps nothing: its own cookies, no history, no place in the
@@ -681,6 +702,8 @@ final class Tab: ObservableObject, Identifiable {
         hovered.tab = self
         controller.add(hovered, contentWorld: .defaultClient, name: HoveredLink.name)
         controller.add(middles, contentWorld: Web.world, name: MiddleRelay.name)
+        translate.tab = self
+        controller.add(translate, contentWorld: Web.world, name: TranslateRelay.name)
         // These two patch the page's own functions (getUserMedia, play), so
         // they live in the page's world and are heard from there.
         controller.add(capture, contentWorld: .page, name: CaptureRelay.name)

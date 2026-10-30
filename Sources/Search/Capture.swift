@@ -305,6 +305,17 @@ enum CaptureMenu {
                 })
             }
         }
+        // The words in the tab's pictures, in your language, from here on
+        // (see Translate.swift).
+        if #available(macOS 15.0, *), let tab = browser.active,
+           ["http", "https"].contains(tab.pageAddress?.scheme?.lowercased() ?? "") {
+            menu.addItem(.separator())
+            let on = tab.translatesImages
+            let translate = item("Translate Images in This Tab", symbol: "character.bubble") { tab.translateImages(!on) }
+            translate.state = on ? .on : .off
+            translate.toolTip = "Translates the writing in this tab's pictures as they come into view, on every page until turned off"
+            menu.addItem(translate)
+        }
         if let url = browser.active?.address, let scheme = url.scheme, let host = url.host(), !host.isEmpty {
             menu.addItem(.separator())
             site(host, origin: Browser.origin(scheme, host, url.port ?? 0), into: menu)
