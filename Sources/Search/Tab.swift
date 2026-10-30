@@ -174,6 +174,27 @@ enum Muter {
     }
 }
 
+/// The page's player, told to stop or to go on — what the keyboard's ⏯ and
+/// Control Centre tell it. WebKit takes that through the page's media
+/// session where the page has one, so the player hears it as its own
+/// pause. The names sit one call down from the public framework and are
+/// asked for first, as `Muter` asks; the answer is whether there was a
+/// player to tell, and no where WebKit hasn't the name at all.
+enum Playback {
+    static let pause = "_pauseNowPlayingMediaSession:"
+    static let play = "_playPredominantOrNowPlayingMediaSession:"
+
+    static func ask(_ web: WKWebView, _ name: String, then: @escaping (Bool) -> Void) {
+        let selector = NSSelectorFromString(name)
+        guard web.responds(to: selector) else { then(false); return }
+        let answer: @convention(block) (Bool) -> Void = { told in
+            DispatchQueue.main.async { then(told) }
+        }
+        typealias Ask = @convention(c) (AnyObject, Selector, @convention(block) (Bool) -> Void) -> Void
+        unsafeBitCast(web.method(for: selector), to: Ask.self)(web, selector, answer)
+    }
+}
+
 /// Sites you let play sound by themselves, from the site card: Safari's
 /// per-site Allow All Auto-Play (#223). Every other site keeps the default,
 /// sound waiting for a click. Remembered for the site, as its zoom is, and
@@ -821,12 +842,31 @@ final class Tab: ObservableObject, Identifiable {
 
     func togglePlayback() {
         guard hasMedia else { return }
-        if noisy {
-            web.pauseAllMediaPlayback()
-        } else {
-            web.evaluateJavaScript(
-                "document.querySelectorAll('video, audio').forEach(function(m){if(m.paused)m.play().catch(function(){})})"
-            )
+        if noisy { pausePlayback() } else { resumePlayback() }
+    }
+
+    /// Stopped the way the keyboard's ⏯ stops it: the page's own player is
+    /// asked to, where it has said it can be (a media session), and it then
+    /// knows it is paused. A video paused behind its player's back is one
+    /// the player may start again — YouTube's does, seconds later. Where
+    /// WebKit has nothing to ask, the media itself is stopped as before.
+    func pausePlayback(then done: ((Bool) -> Void)? = nil) {
+        let web = web
+        Playback.ask(web, Playback.pause) { asked in
+            if !asked { web.pauseAllMediaPlayback() }
+            done?(asked)
+        }
+    }
+
+    func resumePlayback(then done: ((Bool) -> Void)? = nil) {
+        let web = web
+        Playback.ask(web, Playback.play) { asked in
+            if !asked {
+                web.evaluateJavaScript(
+                    "document.querySelectorAll('video, audio').forEach(function(m){if(m.paused)m.play().catch(function(){})})"
+                )
+            }
+            done?(asked)
         }
     }
 
