@@ -2,9 +2,10 @@
 name: search-bench
 description: >
   Drive the Search macOS browser from the repo-root ./bench command: open
-  flask-marked bench tabs, wait for load, read text, run JavaScript, click,
-  type, submit, screenshot the page, probe window chrome, and install or
-  press Chrome extensions. Use when the user asks to test Search, drive the
+  flask-marked bench tabs, wait for load or for a condition, read a page as a
+  numbered outline (see) and act on it by number, watch a value change, read
+  text, run JavaScript, click, type, submit, screenshot the page, probe window
+  chrome, and install or press Chrome extensions. Use when the user asks to test Search, drive the
   browser, run ./bench, open a page in Search, screenshot a tab, check a
   panel, or exercise an extension, and when they run /search-bench.
 metadata:
@@ -62,6 +63,28 @@ before launching, not after, or the world opens in front and has to be thrown aw
 - Bench tabs are not selected, not stored in the session, and not written to history. A bench page you have not selected is laid out off-screen at 1280×800. That is the page `shot` captures.
 - Close the ids you opened when you finish, including when a later command fails. Turning the socket off closes leftover bench tabs.
 - Send one `./bench` call at a time to a world. A command that never answers is cut off at about 25 seconds. `wait` uses the seconds you pass (default 20) plus a few.
+
+## Read and act without pictures
+
+Read the page with `see`, act on it by number, and wait on conditions, not sleeps. None of it needs a screenshot, and every answer is a few lines.
+
+```bash
+./bench --test pages on                 # once per run: a hidden probe's pages run at full speed
+id=$(./bench --test open https://news.ycombinator.com)
+./bench --test until "$id" "document.querySelector('.titleline')" 10
+./bench --test see "$id" 20             # numbered outline, 20 lines at most
+./bench --test see "$id" 10 login       # only the lines with "login" in them
+./bench --test click "$id" @3           # @N is a number see printed
+./bench --test watch "$id" "location.href" 3
+./bench --test close "$id"
+```
+
+- Run `pages on` once after the world starts. Before it, a hidden probe's pages count as hidden: timers run at a fifth of their speed, and sites that render in script (YouTube) stay blank. Animation frames still come about once a second, since the room is off every screen. Don't `select` a bench tab to make it run: the selected page goes into the window `pages on` put away.
+- `see ID [MAX] [WORDS…]` prints the title and address, then one line per heading, dialog, or thing that can be pressed or filled in, in page order: `[4] textbox "Email" =""`, `[7] link "Docs" → /docs`, `h2 "Pricing"`. `↓` and `↑` mark lines below or above the visible part of the page. `checked` and `disabled` say so. MAX defaults to 60 lines. A cut-off list ends with how many more there were. WORDS keeps only the lines that contain them, which is the cheap way to find one control on a long page.
+- `@N` works in `click`, `type`, `submit`, and `tap`, until the next `see` renumbers. An element that has left the page answers `no @N on the page now: run see again`. The numbers live in Search's own script world, so the page can't see or disturb them.
+- `until ID JS [SECONDS] [MS]` re-reads an expression until it is truthy (10 s, every 100 ms) and prints `after 0.95 s: VALUE`. When time runs out it prints the last value and exits 1. It carries on across the page being replaced, so it can follow `open`, a reload, or a click that loads a new page.
+- `watch ID JS [SECONDS] [MS]` re-reads an expression (5 s, every 250 ms) and prints a line only when the value changes: `0.61 sent me@example.com`. Use it to see what a page does over time, such as a player switching videos.
+- JS for `until` and `watch` is one expression, in the page's own world (add `search` at the end for Search's). An exception inside it becomes the value `throws: …`. A syntax error fails at once.
 
 ## A page
 
@@ -129,3 +152,5 @@ The script exits non-zero and prints `error: …`. Trust that string.
 - `no popup open` — `ext-press` that id, then shot or eval the popup.
 - `unknown command` — run `./bench help`. The script is ahead of this file.
 - `open needs a url` — the string was not an address. See the scheme rules above.
+- `no @N on the page now` — the page changed since `see`. Run `see` again.
+- `not true after N s` — `until` ran out of time. The last value follows it.

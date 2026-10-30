@@ -273,7 +273,7 @@ final class Bench {
             answered = true
             given(reply)
         }
-        let patience = (request["do"] as? String) == "wait" ? (request["seconds"] as? Double ?? 30) + 5 :
+        let patience = ["wait", "watch", "until"].contains(request["do"] as? String ?? "") ? (request["seconds"] as? Double ?? 30) + 5 :
             (request["do"] as? String) == "import-file" ? (request["timeout"] as? Double ?? 120) : 25
         DispatchQueue.main.asyncAfter(deadline: .now() + patience) { answer(["error": "no answer within \(Int(patience)) s"]) }
         // --window N: the Nth window's browser, oldest first; the first
@@ -408,6 +408,77 @@ final class Bench {
                 }
             }
 
+        case "see":
+            // The page as an agent needs it, in a few hundred words: headings,
+            // and what can be pressed or filled in, each with a number that
+            // click, type, submit and tap take as @N. The numbers are kept in
+            // Search's own world, where the page can't see or move them.
+            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
+            house(tab)
+            let most = max(1, min(request["max"] as? Int ?? 60, 2000))
+            tab.web.evaluateJavaScript(Bench.see(most: most, matching: request["text"] as? String ?? ""), in: nil, in: Web.world) { result in
+                switch result {
+                case .success(let value): answer(["page": (value as? String) ?? "", "loading": tab.web.isLoading])
+                case .failure(let error): answer(["error": error.localizedDescription])
+                }
+            }
+
+        case "watch", "until":
+            // An expression read again every so often, in the page: `watch`
+            // answers with each change and when it came, `until` as soon as
+            // it is true. One call, nothing left behind in the page.
+            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
+            guard let js = request["js"] as? String, !js.isEmpty else { answer(["error": "\(verb) needs an expression"]); return }
+            house(tab)
+            let seconds = max(0.1, min(request["seconds"] as? Double ?? (verb == "until" ? 10 : 5), 120))
+            let every = max(16, min(request["every"] as? Double ?? (verb == "until" ? 100 : 250), 10_000))
+            let world: WKContentWorld = request["world"] as? String == "search" ? Web.world : .page
+            let script = Bench.watch(js, until: verb == "until")
+            let end = Date().addingTimeInterval(seconds)
+            // Read a second at a time, each time in whatever page the tab
+            // has then. A page that is replaced — the blank one `open` starts
+            // on, a reload, a link out — takes no more than its second with
+            // it, and a second that never answers is let go.
+            var log: [String] = []
+            var last: Any = NSNull()
+            var turn = 0
+            func done() {
+                if verb == "until" {
+                    answer(["value": ["met": false, "value": last is NSNull ? "undefined" : last], "waited": seconds])
+                } else {
+                    answer(["value": log.joined(separator: "\n")])
+                }
+            }
+            func slice() {
+                let left = end.timeIntervalSinceNow
+                guard left > 0.01 else { done(); return }
+                turn += 1
+                let mine = turn
+                let span = min(left, 1)
+                let arguments: [String: Any] = ["seconds": span, "every": every, "offset": seconds - left, "last": last]
+                tab.web.callAsyncJavaScript(script, arguments: arguments, in: nil, in: world) { result in
+                    guard mine == turn else { return }
+                    switch result {
+                    case .success(let value):
+                        let got = value as? [String: Any] ?? [:]
+                        log += got["log"] as? [String] ?? []
+                        last = got["last"] ?? last
+                        if got["met"] as? Bool == true {
+                            let waited = ((seconds - max(0, end.timeIntervalSinceNow)) * 100).rounded() / 100
+                            answer(["value": ["met": true, "value": last], "waited": waited])
+                            return
+                        }
+                        slice()
+                    case .failure(let error):
+                        let said = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+                        if said.contains("SyntaxError") { answer(["error": said]); return }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { if mine == turn { slice() } }
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + span + 0.5) { if mine == turn { slice() } }
+            }
+            slice()
+
         case "tap":
             // A real click on an element, delivered to the view as mouse
             // events — trusted, as a hand's is — where `click` only runs
@@ -418,10 +489,11 @@ final class Bench {
             guard let tab = find(request, in: browser), let selector = request["selector"] as? String else { answer(missing(request)); return }
             house(tab)
             let view = tab.web
-            view.evaluateJavaScript(Bench.locate(selector)) { value, error in
+            view.evaluateJavaScript(Bench.locate(selector), in: nil, in: Bench.world(for: selector)) { result in
                 MainActor.assumeIsolated {
+                    let value = try? result.get()
                     guard let point = value as? [Double], point.count == 2, let window = view.window else {
-                        answer(["error": error?.localizedDescription ?? "nothing matches \(selector)"])
+                        answer(["error": (value as? String) ?? "nothing matches \(selector)"])
                         return
                     }
                     let local = NSPoint(x: point[0], y: view.isFlipped ? point[1] : view.bounds.height - point[1])
@@ -454,11 +526,12 @@ final class Bench {
             }
             house(tab)
             let text = request["text"] as? String ?? ""
-            tab.web.evaluateJavaScript(Bench.act(verb, selector: selector, text: text)) { value, error in
-                MainActor.assumeIsolated {
-                    if let error { answer(["error": error.localizedDescription]); return }
+            tab.web.evaluateJavaScript(Bench.act(verb, selector: selector, text: text), in: nil, in: Bench.world(for: selector)) { result in
+                switch result {
+                case .success(let value):
                     let said = (value as? String) ?? "?"
                     answer(said == "ok" ? ["ok": true] : ["error": said])
+                case .failure(let error): answer(["error": error.localizedDescription])
                 }
             }
 
@@ -1513,14 +1586,7 @@ final class Bench {
                     live.frame = homeFrame
                     home?.addSubview(live)
                 }
-                // A window off every screen counts as covered, and WebKit
-                // paints nothing it thinks nobody sees; this one is told to
-                // paint regardless.
-                let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-                if page.responds(to: occlusion) {
-                    typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-                    unsafeBitCast(page.method(for: occlusion), to: Setter.self)(page, occlusion, false)
-                }
+                Bench.uncover(page)
                 stand.contentView?.addSubview(page)
                 if fresh { page.load(URLRequest(url: address)) }
                 let settle = request["settle"] as? Double ?? 3
@@ -1772,14 +1838,8 @@ final class Bench {
                     home.addSubview(stage)
                 }
             }
-            // A window off every screen counts as covered, and WebKit draws
-            // nothing it thinks nobody sees.
             let web = tab.web
-            let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-            if web.responds(to: occlusion) {
-                typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-                unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
-            }
+            Bench.uncover(web)
             let record = """
             (function () {
               var log = window.__benchFilm = [], t0 = performance.now();
@@ -2231,7 +2291,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "watch", "until",
             ]])
         }
     }
@@ -2879,6 +2939,20 @@ final class Bench {
         tab.web.frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         tab.web.autoresizingMask = [.width, .height]
         window.contentView?.addSubview(tab.web)
+        // Running as a page on screen runs, once `pages on` has shown the
+        // app: covered, it had one frame in two seconds and a fifth of its
+        // timers, and YouTube neither drew nor followed a link.
+        Bench.uncover(tab.web)
+    }
+
+    /// A window off every screen counts as covered, and WebKit paints
+    /// nothing, and runs little, for a page it thinks nobody sees. This one
+    /// is told it is seen.
+    static func uncover(_ web: WKWebView) {
+        let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard web.responds(to: occlusion) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
     }
 
     private func makeRoom() -> NSWindow {
@@ -2944,7 +3018,10 @@ final class Bench {
         return """
         (function () {
           var s = \(sel), el = null;
-          if (s.indexOf('text=') === 0) {
+          if (s[0] === '@') {
+            el = (window.__benchSeen || [])[+s.slice(1)] || null;
+            if (!el || !el.isConnected) return 'no ' + s + ' on the page now: run see again';
+          } else if (s.indexOf('text=') === 0) {
             var want = s.slice(5).trim().toLowerCase();
             el = Array.prototype.find.call(document.querySelectorAll('button, a, [role=button], input[type=submit]'), function (e) {
               return ((e.innerText || e.value || '').trim().toLowerCase()) === want;
@@ -2960,6 +3037,108 @@ final class Bench {
         """
     }
 
+    /// `@N`, a number `see` gave, lives in Search's own world; a selector is
+    /// the page's, as it always was.
+    private static func world(for selector: String) -> WKContentWorld {
+        selector.hasPrefix("@") ? Web.world : .page
+    }
+
+    /// `see`: one pass over the page, in document order. Only what has a box
+    /// on the page; a control inside a link or button it is part of is left
+    /// to that one. Names as a screen reader would find them, cut at 70.
+    private static func see(most: Int, matching: String) -> String {
+        let want = (try? JSONSerialization.data(withJSONObject: [matching.lowercased()])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        return """
+        (function (most, want) {
+          var press = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[contenteditable=""],[contenteditable=true],' +
+            '[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=switch],[role=textbox],[role=combobox],[role=option],[role=slider]';
+          var all = document.querySelectorAll(press + ',h1,h2,h3,dialog[open],[role=dialog],[role=alert]');
+          var seen = [null], lines = [], more = 0, high = innerHeight;
+          // Cut short without splitting a character in two: half of one is
+          // a string WebKit won't hand back.
+          function trim(t, n) { if (t.length <= n) return t; t = t.slice(0, n - 1); return (/[\\uD800-\\uDBFF]$/.test(t) ? t.slice(0, -1) : t) + '\\u2026'; }
+          function cut(t) { return trim((t || '').replace(/\\s+/g, ' ').trim(), 70); }
+          function name(el) {
+            var t = el.getAttribute('aria-label');
+            var by = el.getAttribute('aria-labelledby');
+            if (!t && by) t = by.split(/\\s+/).map(function (i) { var e = document.getElementById(i); return e ? e.innerText : ''; }).join(' ');
+            if (!t && el.labels && el.labels.length) t = el.labels[0].innerText;
+            if (!t && !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) t = el.innerText;
+            var img = !t && el.querySelector && el.querySelector('img[alt]');
+            return cut(t || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || (img && img.alt) || el.getAttribute('name'));
+          }
+          function kind(el) {
+            var role = el.getAttribute('role');
+            if (role) return role;
+            var tag = el.tagName.toLowerCase();
+            if (tag === 'a') return 'link';
+            if (tag === 'input') {
+              return { checkbox: 'checkbox', radio: 'radio', submit: 'button', button: 'button', reset: 'button', image: 'button', range: 'slider', file: 'file' }[(el.type || '').toLowerCase()] || 'textbox';
+            }
+            if (tag === 'textarea' || el.isContentEditable) return 'textbox';
+            if (tag === 'summary') return 'button';
+            return tag;
+          }
+          for (var i = 0; i < all.length; i++) {
+            var el = all[i], r = el.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) continue;
+            if (el.checkVisibility && !el.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
+            var where = r.bottom < 0 ? ' \\u2191' : r.top > high ? ' \\u2193' : '';
+            if (!el.matches(press)) {
+              var head = (/^H\\d$/.test(el.tagName) ? el.tagName.toLowerCase() : 'dialog') + ' "' + cut(el.innerText) + '"';
+              if (want && head.toLowerCase().indexOf(want) < 0) continue;
+              if (lines.length >= most) { more++; continue; }
+              lines.push(head + where);
+              continue;
+            }
+            var up = el.parentElement && el.parentElement.closest('a[href],button,[role=button],[role=link]');
+            if (up && seen.indexOf(up) > 0) continue;
+            var line = kind(el) + ' "' + name(el) + '"';
+            if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== 'checkbox' && el.type !== 'radio') line += ' =' + JSON.stringify(cut(el.value));
+            if (el.checked || el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true') line += ' checked';
+            if (el.disabled || el.getAttribute('aria-disabled') === 'true') line += ' disabled';
+            if (el.tagName === 'A') {
+              var to = el.href;
+              if (to.indexOf(location.origin) === 0) to = to.slice(location.origin.length);
+              line += ' \\u2192 ' + trim(to, 60);
+            }
+            if (want && line.toLowerCase().indexOf(want) < 0) continue;
+            if (lines.length >= most) { more++; continue; }
+            lines.push('[' + seen.length + '] ' + line + where);
+            seen.push(el);
+          }
+          window.__benchSeen = seen;
+          if (more) lines.push('\\u2026 ' + more + ' more: see ID ' + most * 2 + (want ? ' ' + want : '') + ', or a few words to look for: see ID ' + most + ' WORDS');
+          return [document.title + ' \\u2014 ' + location.href].concat(lines).join('\\n');
+        })(\(most), \(want))
+        """
+    }
+
+    /// `watch` and `until`: the expression read every `every` ms for
+    /// `seconds`. A value is kept only when it differs from the last, so a
+    /// minute of a still page is one line.
+    private static func watch(_ js: String, until: Bool) -> String {
+        """
+        const read = () => (\(js)
+        );
+        const t0 = performance.now(), log = [];
+        for (;;) {
+          let v, s;
+          try { v = read(); } catch (e) { v = 'throws: ' + e.message; }
+          // An element by what it is and says, not as {}.
+          if (v && v.nodeType === 1) s = '<' + v.tagName.toLowerCase() + (v.id ? '#' + v.id : '') + '> ' + (v.innerText || v.value || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+          else try { s = typeof v === 'string' ? v : JSON.stringify(v); } catch (e) { s = String(v); }
+          if (s === undefined) s = 'undefined';
+          if (s.length > 300) { s = s.slice(0, 299); if (/[\\uD800-\\uDBFF]$/.test(s)) s = s.slice(0, -1); s += '\\u2026'; }
+          if (\(until) && v) return { met: true, last: s, log: log };
+          if (!\(until) && s !== last) log.push((offset + (performance.now() - t0) / 1000).toFixed(2) + ' ' + s);
+          last = s;
+          if (performance.now() - t0 >= seconds * 1000 || log.length >= 500) return { met: false, last: s, log: log };
+          await new Promise(r => setTimeout(r, every));
+        }
+        """
+    }
+
     /// Click, type into, or submit the element a selector names. Typing goes
     /// through the field's own setter and fires the events a keystroke
     /// would, the same as the password filler, so frameworks notice.
@@ -2968,14 +3147,16 @@ final class Bench {
         let txt = (try? JSONSerialization.data(withJSONObject: [text])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
         return """
         (function () {
-          var el = document.querySelector(\(sel));
-          if (!el) return 'nothing matches ' + \(sel);
+          var s = \(sel);
+          var el = s[0] === '@' ? (window.__benchSeen || [])[+s.slice(1)] : document.querySelector(s);
+          if (s[0] === '@' && (!el || !el.isConnected)) return 'no ' + s + ' on the page now: run see again';
+          if (!el) return 'nothing matches ' + s;
           if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
           var verb = '\(verb)';
           if (verb === 'click') { el.focus && el.focus(); el.click(); return 'ok'; }
           if (verb === 'submit') {
             var form = el.tagName === 'FORM' ? el : el.form || el.closest('form');
-            if (!form) return 'no form around ' + \(sel);
+            if (!form) return 'no form around ' + s;
             if (form.requestSubmit) form.requestSubmit(); else form.submit();
             return 'ok';
           }

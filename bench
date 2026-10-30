@@ -17,7 +17,13 @@
     ./bench tap ID SELECTOR [MODS…]    a real mouse click on an element (or text=Words), shift/cmd/opt held — --test runs only
     ./bench text ID                    the page's text
     ./bench eval ID JS [search]        run JavaScript, print what it returns; search: in Search's own world
-    ./bench click ID SELECTOR
+    ./bench see ID [MAX] [WORDS…]      the page in a few lines: headings, and what can be pressed or filled in,
+                                       numbered for click/type/submit/tap as @N (MAX 60; WORDS: only lines with them)
+    ./bench watch ID JS [SECONDS] [MS] [search]
+                                       an expression read every MS (250) for SECONDS (5): each change, and when
+    ./bench until ID JS [SECONDS] [MS] [search]
+                                       until the expression is true (10 s, every 100 ms); exit 1 if it never is
+    ./bench click ID SELECTOR          SELECTOR: CSS, or @N from see
     ./bench type ID SELECTOR TEXT
     ./bench submit ID SELECTOR         the form around SELECTOR
     ./bench shot ID [PATH] [WIDTH]     a PNG of the page → its path
@@ -136,6 +142,10 @@ def clean(text):
     import re
     return re.sub(r"[\x00-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", str(text or ""))
 
+def clean_lines(text):
+    """`clean`, line by line: a page's words can't steer the terminal either."""
+    return "\n".join(clean(line) for line in str(text or "").split("\n"))
+
 def folder(world):
     name = f"Search ({world})" if world else "Search"
     return os.path.expanduser(f"~/Library/Application Support/{name}")
@@ -197,6 +207,23 @@ def main(argv):
         if len(args) not in (2, 3) or (len(args) == 3 and args[2] != "search"): sys.exit("usage: bench eval ID JS [search]")
         request["id"], request["js"] = args[0], args[1]
         if len(args) == 3: request["world"] = "search"
+    elif verb == "see":
+        if not args or (len(args) > 1 and not args[1].isdigit()): sys.exit("usage: bench see ID [MAX] [WORDS…]")
+        request["id"] = args[0]
+        if len(args) > 1: request["max"] = int(args[1])
+        if len(args) > 2: request["text"] = " ".join(args[2:])
+    elif verb in ("watch", "until"):
+        rest = args[2:]
+        search = rest[-1:] == ["search"]
+        if search: rest = rest[:-1]
+        if len(args) < 2 or len(rest) > 2: sys.exit(f"usage: bench {verb} ID JS [SECONDS] [MS] [search]")
+        request["id"], request["js"] = args[0], args[1]
+        try:
+            if rest: request["seconds"] = float(rest[0])
+            if len(rest) > 1: request["every"] = float(rest[1])
+        except ValueError:
+            sys.exit(f"usage: bench {verb} ID JS [SECONDS] [MS] [search]")
+        if search: request["world"] = "search"
     elif verb in ("click", "submit", "tap"):
         mods = [a for a in args[2:] if a in ("shift", "cmd", "opt")] if verb == "tap" else []
         if len(args) != 2 + len(mods): sys.exit(f"usage: bench {verb} ID SELECTOR" + (" [shift] [cmd] [opt]" if verb == "tap" else ""))
@@ -512,6 +539,18 @@ def main(argv):
         print(answer["path"])
     elif verb in ("open", "ext-page"):
         print(answer["id"])
+    elif verb == "see":
+        print(clean_lines(answer.get("page", "")) + ("\n(still loading)" if answer.get("loading") else ""))
+    elif verb == "watch":
+        print(answer.get("value") or "")
+    elif verb == "until":
+        got = answer.get("value") or {}
+        if not got.get("met"):
+            print(f"not true after {answer.get('waited')} s; last: {got.get('value')}", file=sys.stderr)
+            return 1
+        print(f"after {answer.get('waited')} s: {got.get('value')}")
+    elif verb in ("click", "type", "submit") and answer.get("ok"):
+        print("ok")
     elif verb in ("eval", "ext-popup"):
         value = answer.get("value")
         print(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2))
