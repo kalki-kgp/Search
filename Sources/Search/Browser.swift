@@ -536,7 +536,7 @@ final class Browser: NSObject, ObservableObject {
     /// ⌘⇧M. Whatever is making noise in this tab stops making noise.
     func pauseMedia() {
         guard let tab = active else { return }
-        tab.web.pauseAllMediaPlayback()
+        tab.pausePlayback()
         announce("Paused")
     }
 
@@ -1751,8 +1751,24 @@ final class Browser: NSObject, ObservableObject {
             guard let self, let id = self.floating,
                   let tab = self.tabs.first(where: { $0.id == id })
             else { return }
-            tab.web.evaluateInSearch(Isolate.toggle) { playing in
-                MainActor.assumeIsolated { answer((playing as? Bool) ?? true) }
+            let web = tab.web
+            // The video itself, where there was no player to tell.
+            let direct = {
+                web.evaluateInSearch(Isolate.toggle) { playing in
+                    MainActor.assumeIsolated { answer((playing as? Bool) ?? true) }
+                }
+            }
+            // Through its player first, as the tab's own button goes (see
+            // Tab.pausePlayback): one stopped behind YouTube's back started
+            // again by itself.
+            web.evaluateInSearch(Isolate.where_) { found in
+                MainActor.assumeIsolated {
+                    guard let pair = found as? [Any], pair.count == 2, let playing = pair[1] as? Bool
+                    else { direct(); return }
+                    Playback.ask(web, playing ? Playback.pause : Playback.play) { told in
+                        if told { answer(!playing) } else { direct() }
+                    }
+                }
             }
         }
         floater.onClose = { [weak self] in self?.land() }

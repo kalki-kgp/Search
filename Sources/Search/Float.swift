@@ -980,8 +980,9 @@ enum Isolate {
     (function () {
       var video = document.querySelector('[data-office-float]')
         || document.querySelector('video');
-      if (!video || !video.duration || !isFinite(video.duration)) return [0, true];
-      return [video.currentTime / video.duration, !video.paused];
+      if (!video) return [0, true];
+      var whole = video.duration;
+      return [whole && isFinite(whole) ? video.currentTime / whole : 0, !video.paused];
     })();
     """
 

@@ -29,7 +29,7 @@ enum Web {
     @MainActor static func release(_ controller: WKUserContentController) {
         for name in [ScrollRelay.name, VeilRelay.name, FormRelay.name, ImageRelay.name,
                      StoreRelay.name, PasskeyRelay.name, MiddleRelay.name, IconRelay.name,
-                     CaptureRelay.name, Speed.name, ShieldRelay.name] {
+                     CaptureRelay.name, Speed.name, ShieldRelay.name, TranslateRelay.name] {
             controller.removeScriptMessageHandler(forName: name, contentWorld: world)
             controller.removeScriptMessageHandler(forName: name, contentWorld: .page)
         }
@@ -174,6 +174,27 @@ enum Muter {
     }
 }
 
+/// The page's player, told to stop or to go on — what the keyboard's ⏯ and
+/// Control Centre tell it. WebKit takes that through the page's media
+/// session where the page has one, so the player hears it as its own
+/// pause. The names sit one call down from the public framework and are
+/// asked for first, as `Muter` asks; the answer is whether there was a
+/// player to tell, and no where WebKit hasn't the name at all.
+enum Playback {
+    static let pause = "_pauseNowPlayingMediaSession:"
+    static let play = "_playPredominantOrNowPlayingMediaSession:"
+
+    static func ask(_ web: WKWebView, _ name: String, then: @escaping (Bool) -> Void) {
+        let selector = NSSelectorFromString(name)
+        guard web.responds(to: selector) else { then(false); return }
+        let answer: @convention(block) (Bool) -> Void = { told in
+            DispatchQueue.main.async { then(told) }
+        }
+        typealias Ask = @convention(c) (AnyObject, Selector, @convention(block) (Bool) -> Void) -> Void
+        unsafeBitCast(web.method(for: selector), to: Ask.self)(web, selector, answer)
+    }
+}
+
 /// Sites you let play sound by themselves, from the site card: Safari's
 /// per-site Allow All Auto-Play (#223). Every other site keeps the default,
 /// sound waiting for a click. Remembered for the site, as its zoom is, and
@@ -306,6 +327,26 @@ final class Tab: ObservableObject, Identifiable {
         if held != nil, let url = built?.url, url.absoluteString != "about:blank" {
             held = nil
             address = url
+        }
+        // Translating stays on from page to page (see Translate.swift).
+        if translatesImages { built?.evaluateJavaScript(ImageTranslation.script, in: nil, in: Web.world) }
+    }
+
+    /// Translate Images in This Tab, from the permissions corner.
+    private(set) var translatesImages = false
+    private(set) var imageTranslation: ImageTranslation?
+
+    func translateImages(_ on: Bool) {
+        guard on != translatesImages else { return }
+        translatesImages = on
+        if on {
+            imageTranslation = ImageTranslation(tab: self)
+            if #available(macOS 15.0, *) { Translator.shared.forgetRefusals() }
+            built?.evaluateJavaScript(ImageTranslation.script, in: nil, in: Web.world)
+        } else {
+            imageTranslation?.stop()
+            imageTranslation = nil
+            built?.evaluateJavaScript(ImageTranslation.off, in: nil, in: Web.world)
         }
     }
 
@@ -448,6 +489,23 @@ final class Tab: ObservableObject, Identifiable {
     /// An extension is recording from this tab's page (see RecordingIndicator).
     @Published var recording = false
 
+    /// What `./bench early` asked to run first on this tab's next documents.
+    var benchEarly: String?
+
+    /// A script reading this page through the bench (see, read, seek, text):
+    /// the tab shows the bench's flask while it does and for a few seconds
+    /// after, so a page of yours is never read without your seeing it.
+    @Published private(set) var agentLooking = false
+    private var agentGone: DispatchWorkItem?
+
+    func lookedAtByAgent() {
+        if !agentLooking { agentLooking = true }
+        agentGone?.cancel()
+        let gone = DispatchWorkItem { [weak self] in self?.agentLooking = false }
+        agentGone = gone
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: gone)
+    }
+
     /// Not `web`: a tab asleep is muted without being woken, and hears of
     /// it when its page is built again.
     func toggleMute() {
@@ -530,6 +588,7 @@ final class Tab: ObservableObject, Identifiable {
     private let hovered = HoveredLink()
     private let capture = CaptureRelay()
     private let speed = Speed.Relay()
+    private let translate = TranslateRelay()
     private let ears = AudioWatch()
 
     /// A tab that keeps nothing: its own cookies, no history, no place in the
@@ -681,6 +740,8 @@ final class Tab: ObservableObject, Identifiable {
         hovered.tab = self
         controller.add(hovered, contentWorld: .defaultClient, name: HoveredLink.name)
         controller.add(middles, contentWorld: Web.world, name: MiddleRelay.name)
+        translate.tab = self
+        controller.add(translate, contentWorld: Web.world, name: TranslateRelay.name)
         // These two patch the page's own functions (getUserMedia, play), so
         // they live in the page's world and are heard from there.
         controller.add(capture, contentWorld: .page, name: CaptureRelay.name)
@@ -798,12 +859,31 @@ final class Tab: ObservableObject, Identifiable {
 
     func togglePlayback() {
         guard hasMedia else { return }
-        if noisy {
-            web.pauseAllMediaPlayback()
-        } else {
-            web.evaluateJavaScript(
-                "document.querySelectorAll('video, audio').forEach(function(m){if(m.paused)m.play().catch(function(){})})"
-            )
+        if noisy { pausePlayback() } else { resumePlayback() }
+    }
+
+    /// Stopped the way the keyboard's ⏯ stops it: the page's own player is
+    /// asked to, where it has said it can be (a media session), and it then
+    /// knows it is paused. A video paused behind its player's back is one
+    /// the player may start again — YouTube's does, seconds later. Where
+    /// WebKit has nothing to ask, the media itself is stopped as before.
+    func pausePlayback(then done: ((Bool) -> Void)? = nil) {
+        let web = web
+        Playback.ask(web, Playback.pause) { asked in
+            if !asked { web.pauseAllMediaPlayback() }
+            done?(asked)
+        }
+    }
+
+    func resumePlayback(then done: ((Bool) -> Void)? = nil) {
+        let web = web
+        Playback.ask(web, Playback.play) { asked in
+            if !asked {
+                web.evaluateJavaScript(
+                    "document.querySelectorAll('video, audio').forEach(function(m){if(m.paused)m.play().catch(function(){})})"
+                )
+            }
+            done?(asked)
         }
     }
 
@@ -818,6 +898,10 @@ final class Tab: ObservableObject, Identifiable {
         guard let built else { return }
         let controller = built.configuration.userContentController
         controller.removeAllUserScripts()
+        // A bench tab's `early` script, ahead of everything, the blocker's too.
+        if let benchEarly {
+            controller.addUserScript(WKUserScript(source: benchEarly, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+        }
         controller.addUserScript(
             WKUserScript(source: ScrollRelay.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Web.world)
         )
@@ -1445,10 +1529,12 @@ final class Tab: ObservableObject, Identifiable {
 
     /// Applies the tab's volume level to every media element, including
     /// ones that appear later or live inside shadow roots that call play().
+    /// Only once the tab's slider has set one: until then a page's volume
+    /// is its own, and every play() here put it back to full.
     static let volumeScript = """
     (function () {
-      if (window.__searchVol !== undefined) return;
-      window.__searchVol = 1;
+      if (window.__searchPlays) return;
+      window.__searchPlays = true;
       var play = HTMLMediaElement.prototype.play;
       HTMLMediaElement.prototype.play = function () {
         if (typeof window.__searchVol === 'number') this.volume = window.__searchVol;

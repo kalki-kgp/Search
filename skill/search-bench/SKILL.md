@@ -2,9 +2,10 @@
 name: search-bench
 description: >
   Drive the Search macOS browser from the repo-root ./bench command: open
-  flask-marked bench tabs, wait for load, read text, run JavaScript, click,
-  type, submit, screenshot the page, probe window chrome, and install or
-  press Chrome extensions. Use when the user asks to test Search, drive the
+  flask-marked bench tabs, wait for load or for a condition, read a page as a
+  numbered outline (see) and act on it by number, watch a value change, read
+  text, run JavaScript, click, type, submit, screenshot the page, probe window
+  chrome, and install or press Chrome extensions. Use when the user asks to test Search, drive the
   browser, run ./bench, open a page in Search, screenshot a tab, check a
   panel, or exercise an extension, and when they run /search-bench.
 metadata:
@@ -58,10 +59,51 @@ before launching, not after, or the world opens in front and has to be thrown aw
 - `open` appends a bench tab and prints its id. Keep that id.
 - Pass the id `tabs` printed. Matching is a prefix of the tab's UUID. The first match wins.
 - `close ID` refuses anything except a bench tab. `close all` closes every bench tab, including ones another script opened. Close the ids you opened.
-- `go`, `click`, `type`, `submit`, `eval`, `text`, `shot`, and `sleep` act on whichever tab id you pass. Pass a `⚗` id unless they named one of their tabs.
+- `go`, `click`, `type`, `submit`, `eval`, `shot`, and `sleep` act only on `⚗` tabs, except in a test world. `see`, `read`, `seek` and `text` read any tab that isn't private.
 - Bench tabs are not selected, not stored in the session, and not written to history. A bench page you have not selected is laid out off-screen at 1280×800. That is the page `shot` captures.
 - Close the ids you opened when you finish, including when a later command fails. Turning the socket off closes leftover bench tabs.
 - Send one `./bench` call at a time to a world. A command that never answers is cut off at about 25 seconds. `wait` uses the seconds you pass (default 20) plus a few.
+
+## Read and act without pictures
+
+Read a page with `see`, open the parts you need, act by number, and wait on conditions, not sleeps. None of it needs a screenshot.
+
+```bash
+./bench --test pages on                 # once per run: a hidden probe's pages run at full speed
+id=$(./bench --test open https://news.ycombinator.com)
+./bench --test see "$id"                # the page, or its outline if it is big
+./bench --test see "$id" /list 10       # open §list, 10 lines at most
+./bench --test seek "$id" mistral       # where a word is, section by section
+./bench --test read "$id" /list/2       # the words of one section or row
+./bench --test click "$id" @3           # @N from the last see, read or seek
+./bench --test until "$id" "document.querySelector('.comment')" 10
+./bench --test close "$id"
+```
+
+- Run `pages on` once after the world starts. Before it, a hidden probe's pages count as hidden: timers run at a fifth of their speed, and sites that render in script (YouTube) stay blank. Animation frames still come about once a second, since the room is off every screen. Don't `select` a bench tab to make it run: the selected page goes into the window `pages on` put away.
+- `see ID` answers with the title and address, then lines starting `!` for what needs attention: a dialog, something laid over the page (a cookie notice, a sign-up wall), an alert, a form error, the field with the focus. These come first in every answer, at any depth.
+- A page that fits in MAX lines (60) comes whole: every heading and control in page order, `[4] textbox "Email" =""`, `[7] link "Docs" → /docs`, `h2 "Pricing"`.
+- A bigger page comes as sections, one line each, with what is in it and its first words: `§faq h2 "FAQ" — 2 collapsed, 33 hidden, 2 inside`. A section is a landmark (`§nav`, `§main`, `§footer`, a form), a heading and what follows it, or a list: five or more siblings alike, such as stories, results or comments, as one line until it is opened. Its rows are `§list/1`, `§list/2`…
+- Open sections by name: `see ID /faq /pricing depth 2`. `§faq` and `/faq` are the same; `/` is easier to type. A section's id comes from its words, so it survives the page moving. One that is gone answers `no §faq on the page now`.
+- `read ID [§SECTION…] [CHARS]` gives a section's words, headings marked with `#`, collapsed content included and marked; 4000 characters unless asked. `seek ID WORDS` lists where the words are, with the section and a number for any control that has them, hidden text included.
+- `see ID WORDS` (no section) keeps only the headings and controls with those words.
+- `↓` and `↑` mark what is below or above the visible part of the page. `checked`, `collapsed` and `disabled` say so. A cut-off answer ends with how many more lines there were and the call that shows them.
+- `@N` works in `click`, `type`, `submit`, and `tap`, until the next `see`, `read` or `seek` renumbers. An element that has left the page answers `no @N on the page now: run see again`. The numbers live in Search's own script world, so the page can't see or disturb them.
+- `click`, `type` and `submit` answer `ok`, then where the page is and anything new that needs attention, after a page the click loaded has finished (3 s at most). `a new page since the last look`, or `changed since the last look: +§reviews −§cart`, says what moved.
+- `see`, `read`, `seek` and `text` work on any tab but a private one, and the tab shows the bench's flask while it is read. Everything that acts — `click`, `type`, `submit`, `go`, `eval`, `until`, `watch` — only on bench tabs, outside a test run. A tab that is asleep can't be read until it is woken.
+- `until ID JS [SECONDS] [MS]` re-reads an expression until it is truthy (10 s, every 100 ms) and prints `after 0.95 s: VALUE`. When time runs out it prints the last value and exits 1. It carries on across the page being replaced. Don't wait on `document.readyState`: the blank page a tab starts on is already complete. `see`, `read`, `seek` and `text` wait past it themselves.
+- `watch ID JS [SECONDS] [MS]` re-reads an expression (5 s, every 250 ms) and prints a line only when the value changes: `0.61 sent me@example.com`.
+- `early ID [JS]` runs JS first on every document that bench tab loads from then on, ahead of the page and the blocker, in the page's own world. Set it on a blank tab, then `go`. It is how to see what a page does while it starts, which nothing run after load can. Keep what it records on `window` and read it with `eval`. With no JS it stops. Bench tabs only.
+- JS for `until` and `watch` is one expression, in the page's own world (add `search` at the end for Search's). An exception inside it becomes the value `throws: …`. A syntax error fails at once.
+
+## From another AI app (MCP)
+
+`mcp/search-mcp` is a Model Context Protocol server over stdio with the same commands as tools: `tabs`, `open`, `go`, `wait`, `see`, `read`, `seek`, `click`, `type`, `submit`, `until`, `watch`, `text`, `eval`, `close`. Their answers are what `./bench` prints. It runs outside Search and needs the same switch.
+
+```bash
+claude mcp add search -- "$PWD/mcp/search-mcp"                      # the browser they use
+claude mcp add search-test -e SEARCH_WORLD=test -- "$PWD/mcp/search-mcp"   # a test world
+```
 
 ## A page
 
@@ -129,3 +171,7 @@ The script exits non-zero and prints `error: …`. Trust that string.
 - `no popup open` — `ext-press` that id, then shot or eval the popup.
 - `unknown command` — run `./bench help`. The script is ahead of this file.
 - `open needs a url` — the string was not an address. See the scheme rules above.
+- `no @N on the page now` — the page changed since `see`. Run `see` again.
+- `no §name on the page now` — that section is gone or was renamed. Run `see` for the current outline.
+- `that tab is asleep` — Search put it to sleep. It has no page until the person goes back to it.
+- `not true after N s` — `until` ran out of time. The last value follows it.

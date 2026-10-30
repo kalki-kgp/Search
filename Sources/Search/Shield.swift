@@ -81,7 +81,14 @@ final class Shield: ObservableObject {
         var identifiers: [String]
         var updated: Date
         var rules: Int
+        /// What compiled them (`Shield.compiler`); none before there was one.
+        var compiler: Int?
     }
+
+    /// Raised when the compiler writes something lists compiled before it
+    /// lack, so they are redone at the next launch: 2, YouTube's ad_status.js
+    /// let through (Shield/compiler, stand_ins).
+    static let compiler = 2
 
     private var manifest: Manifest? = {
         guard let data = try? Data(contentsOf: Shield.manifestFile) else { return nil }
@@ -107,6 +114,12 @@ final class Shield: ObservableObject {
             refreshSoon(after: 3)
             return
         }
+        // The scriptlets now, not with the rule lists: they are two mapped
+        // files, and a page that starts before the lists are back — the tab
+        // you left on YouTube, opened again with the window — went without
+        // them, and met the wall a reload got past.
+        sites = SiteIndex(folder: Shield.compiled)
+        generic = GenericIndex(folder: Shield.compiled)
         Task {
             var found: [WKContentRuleList] = []
             for id in manifest.identifiers {
@@ -114,11 +127,10 @@ final class Shield: ObservableObject {
             }
             if found.count == manifest.identifiers.count {
                 install(found)
-                sites = SiteIndex(folder: Shield.compiled)
-                generic = GenericIndex(folder: Shield.compiled)
                 describe(manifest)
-                // Lists compiled before there was a generic index are redone.
-                if Date().timeIntervalSince(manifest.updated) > Shield.freshFor || generic == nil {
+                // Lists compiled before there was a generic index, or by an
+                // older compiler, are redone.
+                if Date().timeIntervalSince(manifest.updated) > Shield.freshFor || generic == nil || manifest.compiler != Shield.compiler {
                     refreshSoon(after: 20)
                 }
             } else {
@@ -235,88 +247,110 @@ final class Shield: ObservableObject {
         return out
     }
 
-    /// YouTube's newest wall comes back as `status: "ERROR"` with an
-    /// `enforcementMessageViewModel`, a shape uBlock's recovery script
-    /// doesn't recognise yet, so its retry never runs. This is that retry,
-    /// for that shape: tag the client the way uBlock does ("channel", then
-    /// the others), which its request-editing scriptlets turn into a request
-    /// YouTube answers, and load the video again. A tag that works is kept,
-    /// so the next video doesn't hit the wall at all.
+    /// YouTube's wall ("Ad blockers violate YouTube's Terms of Service") is
+    /// not sent as a refusal. For an account it is enforced on, an answer
+    /// that says OK and carries the video also carries the wall, dormant, in
+    /// `auxiliaryUi.messageRenderers.bkaEnforcementMessageViewModel`. YouTube's
+    /// own code then runs a dozen tests in the page, and if any finds a
+    /// blocker it writes the wall over the good answer: `playabilityStatus`
+    /// becomes the error, `videoDetails` goes. In a playlist it then skips
+    /// on, every few seconds. Reloading fetches the same thing, which is
+    /// why it never helped, and the same account passes in Brave.
     ///
-    /// Woken only by YouTube's own page events and a few checks after each —
-    /// no observer over the page, nothing running while a video plays.
+    /// So the answer is kept. Those two fields are made to ignore that one
+    /// write, and the video plays. It can't be done by taking the wall out or
+    /// changing it: its fields are signed, and a mismatch is "Something went
+    /// wrong". Its type mustn't change either, as any other goes to a popup.
+    /// The tests are left to fail: there are many, and new ones come.
+    ///
+    /// The tests it can be spared are passed as well: ad_status.js is let
+    /// through by the compiled lists (Shield/compiler, stand_ins), and the ad
+    /// id and YouTube's stats pings (qoe, ptracking, pagead) are answered
+    /// here with an empty 200, as uBlock's `redirect=nooptext` does.
+    ///
+    /// In the page's own world, ahead of the scriptlets, which wrap it in
+    /// turn. Nothing runs while a video plays.
     private static let youtubeWall = """
     (function () {
-      if (window.__searchWall) return;
-      window.__searchWall = true;
-      var tags = ['channel', 'lactmilli', 'instream', 'yahi'], at = -1, base = null, tries = 0, timer = 0;
-      var root = document.documentElement, saved = null;
-      try { saved = localStorage.getItem('search.wall'); } catch (e) {}
-      // The tag that worked last time goes first.
-      if (tags.indexOf(saved) > 0) tags = [saved].concat(tags.filter(function (t) { return t !== saved; }));
-      // The wall is never drawn while this works on it; only YouTube's
-      // ad-block message is hidden, other errors still show. If every tag
-      // fails, search-wall on <html> lets the message through.
-      var css = document.createElement('style');
-      css.textContent =
-        'html:not([search-wall]) yt-playability-error-supported-renderers:has(ytd-enforcement-message-view-model){display:none!important}' +
-        'html:not([search-wall]) ytd-watch-flexy[player-unavailable]:has(ytd-enforcement-message-view-model) :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}';
-      root.appendChild(css);
-      function tag(c, i) {
-        if (base === null) base = c.userAgent;
-        at = i;
-        c.userAgent = base.replace(/Mozilla\\/5\\.0 \\([^)]+/, function (m) { return m + '; ' + tags[i]; });
-      }
-      function client() {
-        return window.ytcfg && ytcfg.data_ && ytcfg.data_.INNERTUBE_CONTEXT && ytcfg.data_.INNERTUBE_CONTEXT.client;
-      }
-      function walled(r) {
-        var s = r && r.playabilityStatus;
-        return !!(s && s.status !== 'OK' && s.errorScreen && s.errorScreen.enforcementMessageViewModel);
-      }
-      function clear() {
-        var f = document.querySelector('ytd-watch-flexy[player-unavailable]');
-        if (f) f.removeAttribute('player-unavailable');
-        var e = document.querySelector('yt-playability-error-supported-renderers');
-        if (e) e.hidden = true;
-      }
-      function check() {
-        timer = 0;
-        var p = document.getElementById('movie_player');
-        var r = p && p.getPlayerResponse && p.getPlayerResponse();
-        if (!r) { if (++tries < 8) timer = setTimeout(check, 500); return; }
-        if (!walled(r)) {
-          if (r.playabilityStatus && r.playabilityStatus.status === 'OK' && at >= 0) {
-            clear();
-            try { localStorage.setItem('search.wall', tags[at]); } catch (e) {}
+      if (window.__searchStandIn) return;
+      window.__searchStandIn = true;
+      var wall = 'bkaEnforcementMessageViewModel';
+      function hold(o) {
+        if (!o || typeof o !== 'object') return o;
+        if (o.playerResponse) hold(o.playerResponse);
+        var m = o.auxiliaryUi && o.auxiliaryUi.messageRenderers;
+        if (!m || !m[wall] || !o.playabilityStatus) return o;
+        var was = Object.getOwnPropertyDescriptor(o, 'playabilityStatus');
+        if (was && was.get) return o;
+        var status = o.playabilityStatus, details = o.videoDetails, refused = false;
+        Object.defineProperty(o, 'playabilityStatus', {
+          configurable: true, enumerable: true,
+          get: function () { return status; },
+          set: function (v) {
+            if (v && v.errorScreen && v.errorScreen.enforcementMessageViewModel) refused = true; else status = v;
           }
-          return;
-        }
-        var c = client();
-        var id = (r.videoDetails && r.videoDetails.videoId) || new URLSearchParams(location.search).get('v');
-        var start = (r.playerConfig && r.playerConfig.playbackStartConfig && r.playerConfig.playbackStartConfig.startSeconds) || 0;
-        if (!c || !c.userAgent || !id || at + 1 >= tags.length) { root.setAttribute('search-wall', ''); return; }
-        tag(c, at + 1);
-        p.loadVideoById(id, start);
-        tries = 0;
-        timer = setTimeout(check, 1500);
+        });
+        Object.defineProperty(o, 'videoDetails', {
+          configurable: true, enumerable: true,
+          get: function () { return details; },
+          set: function (v) { if (v !== undefined || !refused) details = v; }
+        });
+        return o;
       }
-      function soon() {
-        var e = document.querySelector('yt-playability-error-supported-renderers');
-        if (e) e.hidden = false;
-        root.removeAttribute('search-wall');
-        tries = 0;
-        clearTimeout(timer);
-        timer = setTimeout(check, 400);
-      }
-      // Before the next video is asked for: ask with the tag that worked,
-      // so the answer never has the wall in it.
-      window.addEventListener('yt-navigate-start', function () {
-        var c = client();
-        if (c && c.userAgent && at < 0 && saved) tag(c, 0);
+      function holdAll(r) { if (Array.isArray(r)) r.forEach(hold); else hold(r); return r; }
+      var first;
+      Object.defineProperty(window, 'ytInitialPlayerResponse', {
+        configurable: true, enumerable: true,
+        get: function () { return first; },
+        set: function (v) { first = hold(v); }
       });
-      window.addEventListener('yt-navigate-finish', soon);
-      window.addEventListener('yt-page-data-updated', soon);
+      JSON.parse = new Proxy(JSON.parse, {
+        apply: function (real, self, args) {
+          var r = Reflect.apply(real, self, args);
+          return typeof args[0] === 'string' && args[0].indexOf(wall) >= 0 ? holdAll(r) : r;
+        }
+      });
+      Response.prototype.json = new Proxy(Response.prototype.json, {
+        apply: function (real, self, args) { return Reflect.apply(real, self, args).then(holdAll); }
+      });
+      var probe = /^https?:\\/\\/(?:googleads\\.g\\.doubleclick\\.net\\/pagead\\/id|(?:www\\.|m\\.)?youtube\\.com\\/(?:api\\/stats\\/(?:qoe|ads|atr)|ptracking|pagead\\/))/;
+      function wanted(u) {
+        try { return probe.test(new URL(u, location.href).href); } catch (e) { return false; }
+      }
+      window.fetch = new Proxy(window.fetch, {
+        apply: function (real, self, args) {
+          var u = args[0] && (typeof args[0] === 'string' ? args[0] : args[0].url);
+          if (u && wanted(u)) return Promise.resolve(new Response('', { status: 200, statusText: 'OK' }));
+          return Reflect.apply(real, self, args);
+        }
+      });
+      var asked = new WeakMap(), X = XMLHttpRequest.prototype;
+      X.open = new Proxy(X.open, {
+        apply: function (real, self, args) {
+          if (wanted(String(args[1]))) asked.set(self, String(args[1])); else asked.delete(self);
+          return Reflect.apply(real, self, args);
+        }
+      });
+      X.send = new Proxy(X.send, {
+        apply: function (real, self, args) {
+          var u = asked.get(self);
+          if (!u) return Reflect.apply(real, self, args);
+          Object.defineProperties(self, {
+            readyState: { value: 4 }, status: { value: 200 }, statusText: { value: 'OK' },
+            responseText: { value: '' }, response: { value: '' }, responseURL: { value: new URL(u, location.href).href }
+          });
+          setTimeout(function () {
+            self.dispatchEvent(new Event('readystatechange'));
+            self.dispatchEvent(new ProgressEvent('load'));
+            self.dispatchEvent(new ProgressEvent('loadend'));
+          }, 0);
+        }
+      });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon = new Proxy(navigator.sendBeacon, {
+          apply: function (real, self, args) { return wanted(String(args[0])) ? true : Reflect.apply(real, self, args); }
+        });
+      }
     })();
     """
 
@@ -386,7 +420,7 @@ final class Shield: ObservableObject {
             let summary = (try? Data(contentsOf: Shield.compiled.appendingPathComponent("summary.json")))
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Int] } ?? [:]
             let count = (summary["network_rules"] ?? 0) + (summary["cosmetic_rules"] ?? 0)
-            let next = Manifest(identifiers: ids, updated: Date(), rules: count)
+            let next = Manifest(identifiers: ids, updated: Date(), rules: count, compiler: Shield.compiler)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             try encoder.encode(next).write(to: Shield.manifestFile, options: .atomic)

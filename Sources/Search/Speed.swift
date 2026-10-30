@@ -149,9 +149,49 @@ enum Speed {
           s.textContent = \(style)[0];
           (document.head || document.documentElement).appendChild(s);
         })();
+        (function (requestIdleCallback) {
         \(js)
+        })(\(idle));
+        \(late)
         """
     }()
+
+    /// What the page script calls `requestIdleCallback`. WebKit has none (it
+    /// took it back out, bug 287681), and the script's watch over the page
+    /// calls it without looking: each change threw, and a video added after
+    /// the first look never got its controls: YouTube's Shorts player, built
+    /// the first time you go to one from a video, until the page was
+    /// reloaded. An argument, not a global: the page sees what Safari shows
+    /// it. A busy page's changes are read together, ten times a second at
+    /// most, and a still page costs nothing.
+    private static let idle = """
+    (function () {
+      var due = [];
+      return function (run) {
+        if (due.push(run) > 1) return;
+        setTimeout(function () {
+          var now = due;
+          due = [];
+          now.forEach(function (one) { try { one(); } catch (e) {} });
+        }, 100);
+      };
+    })()
+    """
+
+    /// The page script waits for `loadeddata` to dress a video that isn't
+    /// ready, and that fires once per load: a video caught back at the start
+    /// of a seek or a stall had already had its one, and waited for ever.
+    /// These come round each time.
+    private static let late = """
+    ['canplay', 'playing'].forEach(function (name) {
+      window.addEventListener(name, function (e) {
+        var media = e.target, speed = window.VSC_controller;
+        if (media instanceof HTMLMediaElement && !media.vsc && speed && speed.initialized) {
+          speed.onVideoFound(media, media.parentElement || media.parentNode);
+        }
+      }, true);
+    });
+    """
 
     final class Relay: NSObject, WKScriptMessageHandler {
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {

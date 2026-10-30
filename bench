@@ -17,7 +17,21 @@
     ./bench tap ID SELECTOR [MODS…]    a real mouse click on an element (or text=Words), shift/cmd/opt held — --test runs only
     ./bench text ID                    the page's text
     ./bench eval ID JS [search]        run JavaScript, print what it returns; search: in Search's own world
-    ./bench click ID SELECTOR
+    ./bench see ID [MAX] [§SECTION…] [depth N] [WORDS…]
+                                       the page in a few lines, numbered for click/type/submit/tap as @N: a small page
+                                       whole; a big one as what needs attention, then its sections (§name, or /name)
+                                       with their size and first words. §SECTION opens those, depth N levels down;
+                                       WORDS: only the lines with them. MAX 60. Any tab but a private one
+    ./bench read ID [§SECTION…] [CHARS]
+                                       the words of sections, or of the page (4000 characters)
+    ./bench seek ID WORDS…             where the words are on the page, section by section
+    ./bench early ID [JS]              JS first on every document this bench tab loads from now on, ahead of the
+                                       page and the blocker; go ID URL then runs it; no JS: stop
+    ./bench watch ID JS [SECONDS] [MS] [search]
+                                       an expression read every MS (250) for SECONDS (5): each change, and when
+    ./bench until ID JS [SECONDS] [MS] [search]
+                                       until the expression is true (10 s, every 100 ms); exit 1 if it never is
+    ./bench click ID SELECTOR          SELECTOR: CSS, or @N from see
     ./bench type ID SELECTOR TEXT
     ./bench submit ID SELECTOR         the form around SELECTOR
     ./bench shot ID [PATH] [WIDTH]     a PNG of the page → its path
@@ -136,6 +150,10 @@ def clean(text):
     import re
     return re.sub(r"[\x00-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", str(text or ""))
 
+def clean_lines(text):
+    """`clean`, line by line: a page's words can't steer the terminal either."""
+    return "\n".join(clean(line) for line in str(text or "").split("\n"))
+
 def folder(world):
     name = f"Search ({world})" if world else "Search"
     return os.path.expanduser(f"~/Library/Application Support/{name}")
@@ -156,6 +174,62 @@ def ask(path, request):
             chunks.append(chunk)
     line = b"".join(chunks).split(b"\n", 1)[0]
     return json.loads(line or b"{}")
+
+def page_request(verb, tab, words):
+    """see, read and seek's arguments: §name (or /name) for a section, a
+    number for MAX (see) or CHARS (read), `depth N`, and the rest words."""
+    request, rest, opened = {"id": tab}, [], []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w[:1] in ("§", "/") and len(w) > 1 and verb != "seek":
+            opened.append(w[1:])
+        elif w == "depth" and i + 1 < len(words) and words[i + 1].isdigit() and verb == "see":
+            request["depth"] = int(words[i + 1]); i += 1
+        elif w.isdigit() and not rest and verb != "seek":
+            request["max" if verb == "see" else "chars"] = int(w)
+        else:
+            rest.append(w)
+        i += 1
+    if opened: request["open"] = opened
+    if rest: request["text"] = " ".join(rest)
+    return request
+
+def render(verb, answer):
+    """What a command prints: (stdout, stderr, exit code). The MCP server
+    (mcp/search-mcp) answers with the same words."""
+    if "error" in answer:
+        return "", "error: " + str(answer["error"]), 1
+    if verb == "text":
+        return answer.get("text", ""), "\n[… truncated]" if answer.get("truncated") else "", 0
+    if verb == "shot":
+        return answer["path"], "", 0
+    if verb in ("open", "ext-page"):
+        return answer["id"], "", 0
+    if verb in ("see", "read", "seek"):
+        return clean_lines(answer.get("page", "")) + ("\n(still loading)" if answer.get("loading") else ""), "", 0
+    if verb == "watch":
+        return answer.get("value") or "", "", 0
+    if verb == "until":
+        got = answer.get("value") or {}
+        if not got.get("met"):
+            return "", f"not true after {answer.get('waited')} s; last: {got.get('value')}", 1
+        return f"after {answer.get('waited')} s: {got.get('value')}", "", 0
+    if verb in ("click", "type", "submit", "tap") and answer.get("ok"):
+        after = clean_lines(answer.get("after", ""))
+        return "ok" + ("\n" + after if after else ""), "", 0
+    if verb in ("eval", "ext-popup"):
+        value = answer.get("value")
+        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2), "", 0
+    if verb == "tabs":
+        rows = []
+        for tab in answer.get("tabs", []):
+            mark = "⚗" if tab.get("bench") else ("●" if tab.get("active") else " ")
+            state = " …" if tab.get("loading") else (" z" if tab.get("asleep") else "")
+            group = f"  [{clean(tab['group'])}]" if tab.get("group") else ""
+            rows.append(f"{mark} {tab['id']}  {clean(tab.get('title')) or '—'}  {clean(tab.get('url'))}{state}{group}")
+        return "\n".join(rows), "", 0
+    return json.dumps(answer, ensure_ascii=False, indent=2), "", 0
 
 def main(argv):
     world = "test" if "--test" in argv else None
@@ -197,6 +271,29 @@ def main(argv):
         if len(args) not in (2, 3) or (len(args) == 3 and args[2] != "search"): sys.exit("usage: bench eval ID JS [search]")
         request["id"], request["js"] = args[0], args[1]
         if len(args) == 3: request["world"] = "search"
+    elif verb in ("see", "read", "seek"):
+        usage = {"see": "bench see ID [MAX] [§SECTION…] [depth N] [WORDS…]",
+                 "read": "bench read ID [§SECTION…] [CHARS]",
+                 "seek": "bench seek ID WORDS…"}[verb]
+        if not args: sys.exit("usage: " + usage)
+        request.update(page_request(verb, args[0], args[1:]))
+        if verb == "seek" and not request.get("text"): sys.exit("usage: " + usage)
+    elif verb == "early":
+        if len(args) not in (1, 2): sys.exit("usage: bench early ID [JS]")
+        request["id"] = args[0]
+        if len(args) == 2: request["js"] = args[1]
+    elif verb in ("watch", "until"):
+        rest = args[2:]
+        search = rest[-1:] == ["search"]
+        if search: rest = rest[:-1]
+        if len(args) < 2 or len(rest) > 2: sys.exit(f"usage: bench {verb} ID JS [SECONDS] [MS] [search]")
+        request["id"], request["js"] = args[0], args[1]
+        try:
+            if rest: request["seconds"] = float(rest[0])
+            if len(rest) > 1: request["every"] = float(rest[1])
+        except ValueError:
+            sys.exit(f"usage: bench {verb} ID JS [SECONDS] [MS] [search]")
+        if search: request["world"] = "search"
     elif verb in ("click", "submit", "tap"):
         mods = [a for a in args[2:] if a in ("shift", "cmd", "opt")] if verb == "tap" else []
         if len(args) != 2 + len(mods): sys.exit(f"usage: bench {verb} ID SELECTOR" + (" [shift] [cmd] [opt]" if verb == "tap" else ""))
@@ -502,28 +599,10 @@ def main(argv):
     if answer.get("onScreen"):
         print("error: a window came onto a screen in this test run — stop the probe: " + "; ".join(answer["onScreen"]), file=sys.stderr)
         sys.exit(3)
-    if "error" in answer:
-        sys.exit("error: " + str(answer["error"]))
-    if verb == "text":
-        print(answer.get("text", ""))
-        if answer.get("truncated"):
-            print("\n[… truncated]", file=sys.stderr)
-    elif verb == "shot":
-        print(answer["path"])
-    elif verb in ("open", "ext-page"):
-        print(answer["id"])
-    elif verb in ("eval", "ext-popup"):
-        value = answer.get("value")
-        print(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2))
-    elif verb == "tabs":
-        for tab in answer.get("tabs", []):
-            mark = "⚗" if tab.get("bench") else ("●" if tab.get("active") else " ")
-            state = " …" if tab.get("loading") else (" z" if tab.get("asleep") else "")
-            group = f"  [{clean(tab['group'])}]" if tab.get("group") else ""
-            print(f"{mark} {tab['id']}  {clean(tab.get('title')) or '—'}  {clean(tab.get('url'))}{state}{group}")
-    else:
-        print(json.dumps(answer, ensure_ascii=False, indent=2))
-    return 0
+    out, err, code = render(verb, answer)
+    if out: print(out)
+    if err: print(err, file=sys.stderr)
+    return code
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

@@ -273,7 +273,7 @@ final class Bench {
             answered = true
             given(reply)
         }
-        let patience = (request["do"] as? String) == "wait" ? (request["seconds"] as? Double ?? 30) + 5 :
+        let patience = ["wait", "watch", "until"].contains(request["do"] as? String ?? "") ? (request["seconds"] as? Double ?? 30) + 5 :
             (request["do"] as? String) == "import-file" ? (request["timeout"] as? Double ?? 120) : 25
         DispatchQueue.main.asyncAfter(deadline: .now() + patience) { answer(["error": "no answer within \(Int(patience)) s"]) }
         // --window N: the Nth window's browser, oldest first; the first
@@ -375,9 +375,10 @@ final class Bench {
             answer(describe(tab))
 
         case "text":
-            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
-            house(tab)
-            tab.web.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, error in
+            guard let tab = readable(request, in: browser) else { answer(missing(request)); return }
+            guard tab.built != nil, !tab.asleep else { answer(["error": "that tab is asleep: there is no page to read until it is woken"]); return }
+            if tab.bench { house(tab) } else { tab.lookedAtByAgent() }
+            Bench.pastBlank(tab.web) { tab.web.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, error in
                 MainActor.assumeIsolated {
                     if let error { answer(["error": error.localizedDescription]); return }
                     var text = (value as? String) ?? ""
@@ -385,7 +386,7 @@ final class Bench {
                     if text.count > 120_000 { text = String(text.prefix(120_000)); cut = true }
                     answer(["text": text, "truncated": cut, "url": tab.address?.absoluteString ?? "", "title": tab.title])
                 }
-            }
+            } }
 
         case "eval":
             guard let tab = find(request, in: browser) else { answer(missing(request)); return }
@@ -408,6 +409,102 @@ final class Bench {
                 }
             }
 
+        case "see", "read", "seek":
+            // The page as an agent needs it (Outline/outline.js). `see`: a
+            // small page whole, a big one as sections with their size and
+            // first words, each opened by name, and what needs attention
+            // first; `read`: the words of sections; `seek`: where words are.
+            // Numbers for click, type, submit and tap (@N) are kept in
+            // Search's own world, where the page can't see or move them.
+            // Any tab but a private one can be read; only the bench's own
+            // can be acted on.
+            guard let tab = readable(request, in: browser) else { answer(missing(request)); return }
+            guard let built = tab.built, !tab.asleep else { answer(["error": "that tab is asleep: there is no page to read until it is woken"]); return }
+            if tab.bench { house(tab) } else { tab.lookedAtByAgent() }
+            var options: [String: Any] = ["mode": verb, "most": max(1, min(request["max"] as? Int ?? 60, 2000))]
+            if let words = request["text"] as? String { options["want"] = words }
+            if let open = request["open"] as? [String] { options["open"] = open }
+            if let depth = request["depth"] as? Int { options["depth"] = depth }
+            if let chars = request["chars"] as? Int { options["chars"] = chars }
+            if verb == "seek", (options["want"] as? String ?? "").isEmpty { answer(["error": "seek needs words to look for"]); return }
+            options["last"] = looks[tab.id] ?? NSNull()
+            guard let script = Bench.outline(options) else { answer(["error": "Outline/outline.js is missing from this build"]); return }
+            Bench.pastBlank(built) { built.evaluateJavaScript(script, in: nil, in: Web.world) { [weak self] result in
+                switch result {
+                case .success(let value):
+                    let got = value as? [String: Any] ?? [:]
+                    if let look = got["look"] { self?.remember(look, for: tab) }
+                    answer(["page": got["text"] as? String ?? "", "loading": built.isLoading])
+                case .failure(let error): answer(["error": error.localizedDescription])
+                }
+            } }
+
+        case "early":
+            // A script for every document this bench tab loads from now on,
+            // in the page's world, before any of the page's or the blocker's:
+            // the only way to see what a page does while it starts. Nothing
+            // for the tab means none. The bench's own tabs only.
+            guard let tab = find(request, in: browser), tab.bench || Store.testing else { answer(missing(request)); return }
+            let js = request["js"] as? String ?? ""
+            tab.benchEarly = js.isEmpty ? nil : js
+            answer(["ok": true])
+
+        case "watch", "until":
+            // An expression read again every so often, in the page: `watch`
+            // answers with each change and when it came, `until` as soon as
+            // it is true. One call, nothing left behind in the page.
+            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
+            guard let js = request["js"] as? String, !js.isEmpty else { answer(["error": "\(verb) needs an expression"]); return }
+            house(tab)
+            let seconds = max(0.1, min(request["seconds"] as? Double ?? (verb == "until" ? 10 : 5), 120))
+            let every = max(16, min(request["every"] as? Double ?? (verb == "until" ? 100 : 250), 10_000))
+            let world: WKContentWorld = request["world"] as? String == "search" ? Web.world : .page
+            let script = Bench.watch(js, until: verb == "until")
+            let end = Date().addingTimeInterval(seconds)
+            // Read a second at a time, each time in whatever page the tab
+            // has then. A page that is replaced — the blank one `open` starts
+            // on, a reload, a link out — takes no more than its second with
+            // it, and a second that never answers is let go.
+            var log: [String] = []
+            var last: Any = NSNull()
+            var turn = 0
+            func done() {
+                if verb == "until" {
+                    answer(["value": ["met": false, "value": last is NSNull ? "undefined" : last], "waited": seconds])
+                } else {
+                    answer(["value": log.joined(separator: "\n")])
+                }
+            }
+            func slice() {
+                let left = end.timeIntervalSinceNow
+                guard left > 0.01 else { done(); return }
+                turn += 1
+                let mine = turn
+                let span = min(left, 1)
+                let arguments: [String: Any] = ["seconds": span, "every": every, "offset": seconds - left, "last": last]
+                tab.web.callAsyncJavaScript(script, arguments: arguments, in: nil, in: world) { result in
+                    guard mine == turn else { return }
+                    switch result {
+                    case .success(let value):
+                        let got = value as? [String: Any] ?? [:]
+                        log += got["log"] as? [String] ?? []
+                        last = got["last"] ?? last
+                        if got["met"] as? Bool == true {
+                            let waited = ((seconds - max(0, end.timeIntervalSinceNow)) * 100).rounded() / 100
+                            answer(["value": ["met": true, "value": last], "waited": waited])
+                            return
+                        }
+                        slice()
+                    case .failure(let error):
+                        let said = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+                        if said.contains("SyntaxError") { answer(["error": said]); return }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { if mine == turn { slice() } }
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + span + 0.5) { if mine == turn { slice() } }
+            }
+            slice()
+
         case "tap":
             // A real click on an element, delivered to the view as mouse
             // events — trusted, as a hand's is — where `click` only runs
@@ -418,10 +515,11 @@ final class Bench {
             guard let tab = find(request, in: browser), let selector = request["selector"] as? String else { answer(missing(request)); return }
             house(tab)
             let view = tab.web
-            view.evaluateJavaScript(Bench.locate(selector)) { value, error in
+            view.evaluateJavaScript(Bench.locate(selector), in: nil, in: Bench.world(for: selector)) { result in
                 MainActor.assumeIsolated {
+                    let value = try? result.get()
                     guard let point = value as? [Double], point.count == 2, let window = view.window else {
-                        answer(["error": error?.localizedDescription ?? "nothing matches \(selector)"])
+                        answer(["error": (value as? String) ?? "nothing matches \(selector)"])
                         return
                     }
                     let local = NSPoint(x: point[0], y: view.isFlipped ? point[1] : view.bounds.height - point[1])
@@ -454,11 +552,31 @@ final class Bench {
             }
             house(tab)
             let text = request["text"] as? String ?? ""
-            tab.web.evaluateJavaScript(Bench.act(verb, selector: selector, text: text)) { value, error in
-                MainActor.assumeIsolated {
-                    if let error { answer(["error": error.localizedDescription]); return }
+            tab.web.evaluateJavaScript(Bench.act(verb, selector: selector, text: text), in: nil, in: Bench.world(for: selector)) { result in
+                switch result {
+                case .success(let value):
                     let said = (value as? String) ?? "?"
-                    answer(said == "ok" ? ["ok": true] : ["error": said])
+                    guard said == "ok" else { answer(["error": said]); return }
+                    // And what it did, a moment later: where the page is,
+                    // what needs attention, what changed — the look an
+                    // agent would otherwise spend a call on.
+                    // A click that loads a page is let finish first, three
+                    // seconds at most, so what is said is about where it went.
+                    let web = tab.web
+                    @MainActor func settled(_ left: Int) {
+                        if web.isLoading, left > 0 {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled(left - 1) }
+                            return
+                        }
+                        guard let brief = Bench.outline(["mode": "brief", "last": self.looks[tab.id] ?? NSNull()]) else { answer(["ok": true]); return }
+                        web.evaluateJavaScript(brief, in: nil, in: Web.world) { [weak self] after in
+                            let got = (try? after.get()) as? [String: Any] ?? [:]
+                            if let look = got["look"] { self?.remember(look, for: tab) }
+                            answer(["ok": true, "after": got["text"] as? String ?? ""])
+                        }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { settled(26) }
+                case .failure(let error): answer(["error": error.localizedDescription])
                 }
             }
 
@@ -1513,14 +1631,7 @@ final class Bench {
                     live.frame = homeFrame
                     home?.addSubview(live)
                 }
-                // A window off every screen counts as covered, and WebKit
-                // paints nothing it thinks nobody sees; this one is told to
-                // paint regardless.
-                let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-                if page.responds(to: occlusion) {
-                    typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-                    unsafeBitCast(page.method(for: occlusion), to: Setter.self)(page, occlusion, false)
-                }
+                Bench.uncover(page)
                 stand.contentView?.addSubview(page)
                 if fresh { page.load(URLRequest(url: address)) }
                 let settle = request["settle"] as? Double ?? 3
@@ -1772,14 +1883,8 @@ final class Bench {
                     home.addSubview(stage)
                 }
             }
-            // A window off every screen counts as covered, and WebKit draws
-            // nothing it thinks nobody sees.
             let web = tab.web
-            let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-            if web.responds(to: occlusion) {
-                typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-                unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
-            }
+            Bench.uncover(web)
             let record = """
             (function () {
               var log = window.__benchFilm = [], t0 = performance.now();
@@ -2231,7 +2336,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "early", "watch", "until",
             ]])
         }
     }
@@ -2733,6 +2838,25 @@ final class Bench {
         return browser.tabs.first { (Store.testing || $0.bench) && $0.id.uuidString.lowercased().hasPrefix(ref) }
     }
 
+    /// The last look at each tab an agent read — its address and the ids of
+    /// its sections — so the next can say what changed, even after the page
+    /// was replaced. A few dozen at most.
+    private var looks: [UUID: Any] = [:]
+
+    private func remember(_ look: Any, for tab: Tab) {
+        if looks.count > 40, looks[tab.id] == nil { looks.removeAll() }
+        looks[tab.id] = look
+    }
+
+    /// A tab to read: any in any window, but never
+    /// a private one outside a test run. Acting on a page is still `find`'s,
+    /// the bench's own tabs only.
+    private func readable(_ request: [String: Any], in browser: Browser) -> Tab? {
+        guard let ref = (request["id"] as? String)?.lowercased(), !ref.isEmpty else { return nil }
+        let all = [browser] + Browsers.all.filter { $0 !== browser }
+        return all.lazy.flatMap(\.tabs).first { (Store.testing || !$0.shy) && $0.id.uuidString.lowercased().hasPrefix(ref) }
+    }
+
     private func missing(_ request: [String: Any]) -> [String: Any] {
         ["error": "no tab “\(request["id"] as? String ?? "")” — see tabs"]
     }
@@ -2879,6 +3003,20 @@ final class Bench {
         tab.web.frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         tab.web.autoresizingMask = [.width, .height]
         window.contentView?.addSubview(tab.web)
+        // Running as a page on screen runs, once `pages on` has shown the
+        // app: covered, it had one frame in two seconds and a fifth of its
+        // timers, and YouTube neither drew nor followed a link.
+        Bench.uncover(tab.web)
+    }
+
+    /// A window off every screen counts as covered, and WebKit paints
+    /// nothing, and runs little, for a page it thinks nobody sees. This one
+    /// is told it is seen.
+    static func uncover(_ web: WKWebView) {
+        let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard web.responds(to: occlusion) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
     }
 
     private func makeRoom() -> NSWindow {
@@ -2944,7 +3082,10 @@ final class Bench {
         return """
         (function () {
           var s = \(sel), el = null;
-          if (s.indexOf('text=') === 0) {
+          if (s[0] === '@') {
+            el = (window.__benchSeen || [])[+s.slice(1)] || null;
+            if (!el || !el.isConnected) return 'no ' + s + ' on the page now: run see again';
+          } else if (s.indexOf('text=') === 0) {
             var want = s.slice(5).trim().toLowerCase();
             el = Array.prototype.find.call(document.querySelectorAll('button, a, [role=button], input[type=submit]'), function (e) {
               return ((e.innerText || e.value || '').trim().toLowerCase()) === want;
@@ -2960,6 +3101,66 @@ final class Bench {
         """
     }
 
+    /// `@N`, a number `see` gave, lives in Search's own world; a selector is
+    /// the page's, as it always was.
+    private static func world(for selector: String) -> WKContentWorld {
+        selector.hasPrefix("@") ? Web.world : .page
+    }
+
+    /// A tab just opened is on a blank page until its address arrives, and
+    /// the blank page is complete, so anything read then reads nothing.
+    /// Up to ten seconds for the address to take its place.
+    static func pastBlank(_ web: WKWebView, tries: Int = 100, then go: @escaping () -> Void) {
+        let blank = web.url == nil || web.url?.absoluteString == "about:blank"
+        guard blank, web.isLoading, tries > 0 else { go(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { pastBlank(web, tries: tries - 1, then: go) }
+    }
+
+    /// Outline/outline.js, called with these options: from the app's
+    /// Resources, or for a `swift build` binary, which has none, the
+    /// repository's own copy beside these sources.
+    private static let outlineSource: String? = {
+        var places = [Bundle.main.url(forResource: "outline", withExtension: "js")]
+        #if DEBUG
+        places.append(URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Outline/outline.js"))
+        #endif
+        return places.lazy.compactMap { $0.flatMap { try? String(contentsOf: $0, encoding: .utf8) } }.first
+    }()
+
+    static func outline(_ options: [String: Any]) -> String? {
+        guard let source = outlineSource,
+              let data = try? JSONSerialization.data(withJSONObject: options),
+              let json = String(data: data, encoding: .utf8)
+        else { return nil }
+        return source + "(" + json + ")"
+    }
+
+    /// `watch` and `until`: the expression read every `every` ms for
+    /// `seconds`. A value is kept only when it differs from the last, so a
+    /// minute of a still page is one line.
+    private static func watch(_ js: String, until: Bool) -> String {
+        """
+        const read = () => (\(js)
+        );
+        const t0 = performance.now(), log = [];
+        for (;;) {
+          let v, s;
+          try { v = read(); } catch (e) { v = 'throws: ' + e.message; }
+          // An element by what it is and says, not as {}.
+          if (v && v.nodeType === 1) s = '<' + v.tagName.toLowerCase() + (v.id ? '#' + v.id : '') + '> ' + (v.innerText || v.value || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+          else try { s = typeof v === 'string' ? v : JSON.stringify(v); } catch (e) { s = String(v); }
+          if (s === undefined) s = 'undefined';
+          if (s.length > 300) { s = s.slice(0, 299); if (/[\\uD800-\\uDBFF]$/.test(s)) s = s.slice(0, -1); s += '\\u2026'; }
+          if (\(until) && v) return { met: true, last: s, log: log };
+          if (!\(until) && s !== last) log.push((offset + (performance.now() - t0) / 1000).toFixed(2) + ' ' + s);
+          last = s;
+          if (performance.now() - t0 >= seconds * 1000 || log.length >= 500) return { met: false, last: s, log: log };
+          await new Promise(r => setTimeout(r, every));
+        }
+        """
+    }
+
     /// Click, type into, or submit the element a selector names. Typing goes
     /// through the field's own setter and fires the events a keystroke
     /// would, the same as the password filler, so frameworks notice.
@@ -2968,14 +3169,16 @@ final class Bench {
         let txt = (try? JSONSerialization.data(withJSONObject: [text])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
         return """
         (function () {
-          var el = document.querySelector(\(sel));
-          if (!el) return 'nothing matches ' + \(sel);
+          var s = \(sel);
+          var el = s[0] === '@' ? (window.__benchSeen || [])[+s.slice(1)] : document.querySelector(s);
+          if (s[0] === '@' && (!el || !el.isConnected)) return 'no ' + s + ' on the page now: run see again';
+          if (!el) return 'nothing matches ' + s;
           if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
           var verb = '\(verb)';
           if (verb === 'click') { el.focus && el.focus(); el.click(); return 'ok'; }
           if (verb === 'submit') {
             var form = el.tagName === 'FORM' ? el : el.form || el.closest('form');
-            if (!form) return 'no form around ' + \(sel);
+            if (!form) return 'no form around ' + s;
             if (form.requestSubmit) form.requestSubmit(); else form.submit();
             return 'ok';
           }
