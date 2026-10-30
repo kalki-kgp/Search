@@ -107,6 +107,12 @@ final class Shield: ObservableObject {
             refreshSoon(after: 3)
             return
         }
+        // The scriptlets now, not with the rule lists: they are two mapped
+        // files, and a page that starts before the lists are back — the tab
+        // you left on YouTube, opened again with the window — went without
+        // them, and met the wall a reload got past.
+        sites = SiteIndex(folder: Shield.compiled)
+        generic = GenericIndex(folder: Shield.compiled)
         Task {
             var found: [WKContentRuleList] = []
             for id in manifest.identifiers {
@@ -114,8 +120,6 @@ final class Shield: ObservableObject {
             }
             if found.count == manifest.identifiers.count {
                 install(found)
-                sites = SiteIndex(folder: Shield.compiled)
-                generic = GenericIndex(folder: Shield.compiled)
                 describe(manifest)
                 // Lists compiled before there was a generic index are redone.
                 if Date().timeIntervalSince(manifest.updated) > Shield.freshFor || generic == nil {
@@ -236,12 +240,21 @@ final class Shield: ObservableObject {
     }
 
     /// YouTube's newest wall comes back as `status: "ERROR"` with an
-    /// `enforcementMessageViewModel`, a shape uBlock's recovery script
-    /// doesn't recognise yet, so its retry never runs. This is that retry,
-    /// for that shape: tag the client the way uBlock does ("channel", then
-    /// the others), which its request-editing scriptlets turn into a request
-    /// YouTube answers, and load the video again. A tag that works is kept,
-    /// so the next video doesn't hit the wall at all.
+    /// `enforcementMessageViewModel`. It comes and goes by the request: the
+    /// same video asked for again is let through, which is why a reload
+    /// always got past it. So this reloads, at most twice for one video —
+    /// counted in sessionStorage, which outlives the reload and not the tab —
+    /// and if the wall is still there, lets YouTube's message show.
+    ///
+    /// Until then the player is covered by Search's own wait — the breath
+    /// and the turning ring of the window's, in the page — and the wall is
+    /// never drawn. Transforms and opacity only, played by the compositor;
+    /// built when it is needed and gone after, ten seconds at the most.
+    ///
+    /// It used to tag the client and ask the player again in place, as
+    /// uBlock does. uBlock's own script on YouTube does that already, and
+    /// the two took turns undoing each other: a playlist was sent from
+    /// video to video, loaded again and again, with nobody touching it.
     ///
     /// Woken only by YouTube's own page events and a few checks after each —
     /// no observer over the page, nothing running while a video plays.
@@ -249,72 +262,124 @@ final class Shield: ObservableObject {
     (function () {
       if (window.__searchWall) return;
       window.__searchWall = true;
-      var tags = ['channel', 'lactmilli', 'instream', 'yahi'], at = -1, base = null, tries = 0, timer = 0;
-      var root = document.documentElement, saved = null;
-      try { saved = localStorage.getItem('search.wall'); } catch (e) {}
-      // The tag that worked last time goes first.
-      if (tags.indexOf(saved) > 0) tags = [saved].concat(tags.filter(function (t) { return t !== saved; }));
-      // The wall is never drawn while this works on it; only YouTube's
-      // ad-block message is hidden, other errors still show. If every tag
-      // fails, search-wall on <html> lets the message through.
+      var root = document.documentElement, key = 'search.mend', tries = 0, timer = 0, cap = 0, veil = null;
+      // What the tagging kept here, no longer read.
+      try { localStorage.removeItem('search.wall'); } catch (e) {}
+      // Only YouTube's ad-block message is hidden, other errors still show.
+      // If the reloads don't get past it, search-wall on <html> lets it through.
       var css = document.createElement('style');
       css.textContent =
         'html:not([search-wall]) yt-playability-error-supported-renderers:has(ytd-enforcement-message-view-model){display:none!important}' +
-        'html:not([search-wall]) ytd-watch-flexy[player-unavailable]:has(ytd-enforcement-message-view-model) :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}';
+        'html:not([search-wall]) ytd-watch-flexy[player-unavailable]:has(ytd-enforcement-message-view-model) :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}' +
+        'html[search-mend] yt-playability-error-supported-renderers{display:none!important}' +
+        'html[search-mend] ytd-watch-flexy[player-unavailable] :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}' +
+        'html[search-mend] #movie_player>:not(search-mend){opacity:0!important}';
       root.appendChild(css);
-      function tag(c, i) {
-        if (base === null) base = c.userAgent;
-        at = i;
-        c.userAgent = base.replace(/Mozilla\\/5\\.0 \\([^)]+/, function (m) { return m + '; ' + tags[i]; });
+      // The video by its address: the same before a reload and after it.
+      function here() { return new URLSearchParams(location.search).get('v') || location.pathname; }
+      function mend() {
+        try { var n = JSON.parse(sessionStorage.getItem(key)); } catch (e) { return null; }
+        return n && n.here === here() && Date.now() - n.at < 60000 ? n : null;
       }
-      function client() {
-        return window.ytcfg && ytcfg.data_ && ytcfg.data_.INNERTUBE_CONTEXT && ytcfg.data_.INNERTUBE_CONTEXT.client;
-      }
+      function forget() { try { sessionStorage.removeItem(key); } catch (e) {} }
       function walled(r) {
         var s = r && r.playabilityStatus;
         return !!(s && s.status !== 'OK' && s.errorScreen && s.errorScreen.enforcementMessageViewModel);
       }
-      function clear() {
-        var f = document.querySelector('ytd-watch-flexy[player-unavailable]');
-        if (f) f.removeAttribute('player-unavailable');
-        var e = document.querySelector('yt-playability-error-supported-renderers');
-        if (e) e.hidden = true;
+      // The wait, in a closed shadow root: YouTube's styles can't reach in,
+      // and nothing in it is a string of HTML, which YouTube's Trusted
+      // Types would refuse.
+      function make() {
+        var host = document.createElement('search-mend');
+        host.style.cssText = 'position:absolute;inset:0;z-index:2147483647;display:block;pointer-events:none';
+        var shade = host.attachShadow({ mode: 'closed' });
+        var style = document.createElement('style');
+        style.textContent =
+          '.w{position:absolute;inset:0;overflow:hidden;background:#0f0f0f;container-type:size;animation:in .24s ease-out both}' +
+          '.b{position:absolute;left:50%;top:50%;width:92cqmin;height:92cqmin;margin:-46cqmin 0 0 -46cqmin;animation:breath 2.6s ease-in-out infinite alternate}' +
+          '.a{position:absolute;inset:0;border-radius:50%;filter:blur(36px);animation:turn 9s linear infinite;' +
+            'background:conic-gradient(from 0deg,transparent,rgba(255,255,255,.3),rgba(255,48,64,.34) 30%,transparent 50%,rgba(96,128,255,.3) 72%,transparent)}' +
+          '.c{inset:18%;animation-duration:6s;animation-direction:reverse;' +
+            'background:conic-gradient(from 90deg,transparent,rgba(255,255,255,.24),transparent 40%,rgba(255,96,160,.2) 70%,transparent)}' +
+          '.r{position:absolute;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;animation:turn .85s linear infinite;' +
+            'background:conic-gradient(from 0deg,transparent 55%,rgba(255,255,255,.95));' +
+            '-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2.5px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2.5px))}' +
+          '.o{position:absolute;left:50%;top:50%;width:72px;height:72px;margin:-36px 0 0 -36px;border-radius:50%;animation:turn 2.4s linear infinite reverse;' +
+            'background:conic-gradient(from 0deg,rgba(255,255,255,.4),transparent 18%,rgba(255,255,255,.25) 50%,transparent 68%);' +
+            '-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 1.5px),#000 calc(100% - 1px));mask:radial-gradient(farthest-side,transparent calc(100% - 1.5px),#000 calc(100% - 1px))}' +
+          '.t{position:absolute;left:0;right:0;top:calc(50% + 52px);margin:0;text-align:center;color:#fff;' +
+            'font:500 13px/1.4 -apple-system,system-ui,sans-serif;letter-spacing:.02em;animation:breath 2.6s ease-in-out infinite alternate}' +
+          '@keyframes turn{to{transform:rotate(1turn)}}' +
+          '@keyframes breath{from{transform:scale(.97);opacity:.65}to{transform:scale(1.03);opacity:1}}' +
+          '@keyframes in{from{opacity:0}}' +
+          '@media (prefers-reduced-motion:reduce){.a,.b,.r,.o,.t{animation:none}}';
+        var w = document.createElement('div');
+        w.className = 'w';
+        var b = document.createElement('div');
+        b.className = 'b';
+        var a = document.createElement('div');
+        a.className = 'a';
+        var c = document.createElement('div');
+        c.className = 'a c';
+        var r = document.createElement('div');
+        r.className = 'r';
+        var o = document.createElement('div');
+        o.className = 'o';
+        var t = document.createElement('p');
+        t.className = 't';
+        t.textContent = 'Getting past YouTube\\u2019s check';
+        b.append(a, c);
+        w.append(b, o, r, t);
+        shade.append(style, w);
+        return host;
+      }
+      function mending(on) {
+        if (!on) {
+          clearTimeout(cap);
+          root.removeAttribute('search-mend');
+          if (veil) veil.remove();
+          return;
+        }
+        if (root.hasAttribute('search-mend')) return;
+        root.setAttribute('search-mend', '');
+        cap = setTimeout(function () { mending(false); }, 10000);
+        cover();
+      }
+      // Over the player as soon as there is one; after a reload there isn't
+      // yet, so looked for again every tenth of a second while it waits.
+      function cover() {
+        if (!root.hasAttribute('search-mend')) return;
+        var p = document.getElementById('movie_player');
+        if (!p) { setTimeout(cover, 100); return; }
+        if (!veil || veil.parentNode !== p) p.appendChild(veil || (veil = make()));
       }
       function check() {
         timer = 0;
+        var n = mend();
+        if (n) mending(true);
         var p = document.getElementById('movie_player');
         var r = p && p.getPlayerResponse && p.getPlayerResponse();
-        if (!r) { if (++tries < 8) timer = setTimeout(check, 500); return; }
-        if (!walled(r)) {
-          if (r.playabilityStatus && r.playabilityStatus.status === 'OK' && at >= 0) {
-            clear();
-            try { localStorage.setItem('search.wall', tags[at]); } catch (e) {}
-          }
-          return;
-        }
-        var c = client();
-        var id = (r.videoDetails && r.videoDetails.videoId) || new URLSearchParams(location.search).get('v');
-        var start = (r.playerConfig && r.playerConfig.playbackStartConfig && r.playerConfig.playbackStartConfig.startSeconds) || 0;
-        if (!c || !c.userAgent || !id || at + 1 >= tags.length) { root.setAttribute('search-wall', ''); return; }
-        tag(c, at + 1);
-        p.loadVideoById(id, start);
-        tries = 0;
-        timer = setTimeout(check, 1500);
+        var id = r && r.videoDetails && r.videoDetails.videoId;
+        var v = new URLSearchParams(location.search).get('v');
+        // No answer yet, or the one for the video before, still on the
+        // player while a playlist moves on: wait for this one's.
+        if (!r || (v && id && id !== v)) { if (++tries < 12) timer = setTimeout(check, 500); else mending(false); return; }
+        if (!walled(r)) { if (n) forget(); mending(false); return; }
+        var count = n ? n.count : 0;
+        if (count >= 2) { forget(); mending(false); root.setAttribute('search-wall', ''); return; }
+        try { sessionStorage.setItem(key, JSON.stringify({ here: here(), count: count + 1, at: Date.now() })); }
+        catch (e) { mending(false); root.setAttribute('search-wall', ''); return; }
+        mending(true);
+        location.reload();
       }
       function soon() {
-        var e = document.querySelector('yt-playability-error-supported-renderers');
-        if (e) e.hidden = false;
         root.removeAttribute('search-wall');
         tries = 0;
         clearTimeout(timer);
         timer = setTimeout(check, 400);
       }
-      // Before the next video is asked for: ask with the tag that worked,
-      // so the answer never has the wall in it.
-      window.addEventListener('yt-navigate-start', function () {
-        var c = client();
-        if (c && c.userAgent && at < 0 && saved) tag(c, 0);
-      });
+      // Coming back from a reload this asked for: covered from the start.
+      if (mend()) mending(true);
       window.addEventListener('yt-navigate-finish', soon);
       window.addEventListener('yt-page-data-updated', soon);
     })();
