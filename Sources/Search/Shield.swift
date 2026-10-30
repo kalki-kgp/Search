@@ -247,26 +247,72 @@ final class Shield: ObservableObject {
         return out
     }
 
-    /// YouTube walls an account ("Ad blockers violate YouTube's Terms of
-    /// Service") when its ad-blocker tests fail, and a reload can't undo it:
-    /// the tests fail again. So they don't fail.
+    /// YouTube's wall ("Ad blockers violate YouTube's Terms of Service") is
+    /// not sent as a refusal. For an account it is enforced on, an answer
+    /// that says OK and carries the video also carries the wall, dormant, in
+    /// `auxiliaryUi.messageRenderers.bkaEnforcementMessageViewModel`. YouTube's
+    /// own code then runs a dozen tests in the page, and if any finds a
+    /// blocker it writes the wall over the good answer: `playabilityStatus`
+    /// becomes the error, `videoDetails` goes. In a playlist it then skips
+    /// on, every few seconds. Reloading fetches the same thing, which is
+    /// why it never helped, and the same account passes in Brave.
     ///
-    /// - ad_status.js, which sets `google_ad_status`, is let through by the
-    ///   compiled lists on YouTube (Shield/compiler, stand_ins).
-    /// - The ad id doubleclick is asked for, and YouTube's own stats pings
-    ///   (qoe, ptracking, pagead), are answered here, at once, with an empty
-    ///   200 — what uBlock's `redirect=nooptext` gives. Nothing is sent;
-    ///   the page only sees that it went.
+    /// So the answer is kept. Those two fields are made to ignore that one
+    /// write, and the video plays. It can't be done by taking the wall out or
+    /// changing it: its fields are signed, and a mismatch is "Something went
+    /// wrong". Its type mustn't change either, as any other goes to a popup.
+    /// The tests are left to fail: there are many, and new ones come.
     ///
-    /// Measured in WebKit with the compiled lists: blocked, google_ad_status
-    /// never set and five requests failing on every watch page; with this,
-    /// as with no blocker at all. In the page's own world, ahead of the
-    /// scriptlets, which wrap it in turn; wrapped as they wrap things, so
-    /// fetch and XMLHttpRequest still read as the browser's own.
+    /// The tests it can be spared are passed as well: ad_status.js is let
+    /// through by the compiled lists (Shield/compiler, stand_ins), and the ad
+    /// id and YouTube's stats pings (qoe, ptracking, pagead) are answered
+    /// here with an empty 200, as uBlock's `redirect=nooptext` does.
+    ///
+    /// In the page's own world, ahead of the scriptlets, which wrap it in
+    /// turn. Nothing runs while a video plays.
     private static let youtubeWall = """
     (function () {
       if (window.__searchStandIn) return;
       window.__searchStandIn = true;
+      var wall = 'bkaEnforcementMessageViewModel';
+      function hold(o) {
+        if (!o || typeof o !== 'object') return o;
+        if (o.playerResponse) hold(o.playerResponse);
+        var m = o.auxiliaryUi && o.auxiliaryUi.messageRenderers;
+        if (!m || !m[wall] || !o.playabilityStatus) return o;
+        var was = Object.getOwnPropertyDescriptor(o, 'playabilityStatus');
+        if (was && was.get) return o;
+        var status = o.playabilityStatus, details = o.videoDetails, refused = false;
+        Object.defineProperty(o, 'playabilityStatus', {
+          configurable: true, enumerable: true,
+          get: function () { return status; },
+          set: function (v) {
+            if (v && v.errorScreen && v.errorScreen.enforcementMessageViewModel) refused = true; else status = v;
+          }
+        });
+        Object.defineProperty(o, 'videoDetails', {
+          configurable: true, enumerable: true,
+          get: function () { return details; },
+          set: function (v) { if (v !== undefined || !refused) details = v; }
+        });
+        return o;
+      }
+      function holdAll(r) { if (Array.isArray(r)) r.forEach(hold); else hold(r); return r; }
+      var first;
+      Object.defineProperty(window, 'ytInitialPlayerResponse', {
+        configurable: true, enumerable: true,
+        get: function () { return first; },
+        set: function (v) { first = hold(v); }
+      });
+      JSON.parse = new Proxy(JSON.parse, {
+        apply: function (real, self, args) {
+          var r = Reflect.apply(real, self, args);
+          return typeof args[0] === 'string' && args[0].indexOf(wall) >= 0 ? holdAll(r) : r;
+        }
+      });
+      Response.prototype.json = new Proxy(Response.prototype.json, {
+        apply: function (real, self, args) { return Reflect.apply(real, self, args).then(holdAll); }
+      });
       var probe = /^https?:\\/\\/(?:googleads\\.g\\.doubleclick\\.net\\/pagead\\/id|(?:www\\.|m\\.)?youtube\\.com\\/(?:api\\/stats\\/(?:qoe|ads|atr)|ptracking|pagead\\/))/;
       function wanted(u) {
         try { return probe.test(new URL(u, location.href).href); } catch (e) { return false; }
