@@ -489,6 +489,9 @@ final class Tab: ObservableObject, Identifiable {
     /// An extension is recording from this tab's page (see RecordingIndicator).
     @Published var recording = false
 
+    /// What `./bench early` asked to run first on this tab's next documents.
+    var benchEarly: String?
+
     /// A script reading this page through the bench (see, read, seek, text):
     /// the tab shows the bench's flask while it does and for a few seconds
     /// after, so a page of yours is never read without your seeing it.
@@ -895,6 +898,10 @@ final class Tab: ObservableObject, Identifiable {
         guard let built else { return }
         let controller = built.configuration.userContentController
         controller.removeAllUserScripts()
+        // A bench tab's `early` script, ahead of everything, the blocker's too.
+        if let benchEarly {
+            controller.addUserScript(WKUserScript(source: benchEarly, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+        }
         controller.addUserScript(
             WKUserScript(source: ScrollRelay.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Web.world)
         )

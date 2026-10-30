@@ -439,6 +439,16 @@ final class Bench {
                 }
             } }
 
+        case "early":
+            // A script for every document this bench tab loads from now on,
+            // in the page's world, before any of the page's or the blocker's:
+            // the only way to see what a page does while it starts. Nothing
+            // for the tab means none. The bench's own tabs only.
+            guard let tab = find(request, in: browser), tab.bench || Store.testing else { answer(missing(request)); return }
+            let js = request["js"] as? String ?? ""
+            tab.benchEarly = js.isEmpty ? nil : js
+            answer(["ok": true])
+
         case "watch", "until":
             // An expression read again every so often, in the page: `watch`
             // answers with each change and when it came, `until` as soon as
@@ -2326,7 +2336,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "watch", "until",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "early", "watch", "until",
             ]])
         }
     }

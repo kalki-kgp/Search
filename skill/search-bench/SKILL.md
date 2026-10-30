@@ -93,6 +93,7 @@ id=$(./bench --test open https://news.ycombinator.com)
 - `see`, `read`, `seek` and `text` work on any tab but a private one, and the tab shows the bench's flask while it is read. Everything that acts — `click`, `type`, `submit`, `go`, `eval`, `until`, `watch` — only on bench tabs, outside a test run. A tab that is asleep can't be read until it is woken.
 - `until ID JS [SECONDS] [MS]` re-reads an expression until it is truthy (10 s, every 100 ms) and prints `after 0.95 s: VALUE`. When time runs out it prints the last value and exits 1. It carries on across the page being replaced. Don't wait on `document.readyState`: the blank page a tab starts on is already complete. `see`, `read`, `seek` and `text` wait past it themselves.
 - `watch ID JS [SECONDS] [MS]` re-reads an expression (5 s, every 250 ms) and prints a line only when the value changes: `0.61 sent me@example.com`.
+- `early ID [JS]` runs JS first on every document that bench tab loads from then on, ahead of the page and the blocker, in the page's own world. Set it on a blank tab, then `go`. It is how to see what a page does while it starts, which nothing run after load can. Keep what it records on `window` and read it with `eval`. With no JS it stops. Bench tabs only.
 - JS for `until` and `watch` is one expression, in the page's own world (add `search` at the end for Search's). An exception inside it becomes the value `throws: …`. A syntax error fails at once.
 
 ## From another AI app (MCP)

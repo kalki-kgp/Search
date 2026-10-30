@@ -25,6 +25,8 @@
     ./bench read ID [§SECTION…] [CHARS]
                                        the words of sections, or of the page (4000 characters)
     ./bench seek ID WORDS…             where the words are on the page, section by section
+    ./bench early ID [JS]              JS first on every document this bench tab loads from now on, ahead of the
+                                       page and the blocker; go ID URL then runs it; no JS: stop
     ./bench watch ID JS [SECONDS] [MS] [search]
                                        an expression read every MS (250) for SECONDS (5): each change, and when
     ./bench until ID JS [SECONDS] [MS] [search]
@@ -276,6 +278,10 @@ def main(argv):
         if not args: sys.exit("usage: " + usage)
         request.update(page_request(verb, args[0], args[1:]))
         if verb == "seek" and not request.get("text"): sys.exit("usage: " + usage)
+    elif verb == "early":
+        if len(args) not in (1, 2): sys.exit("usage: bench early ID [JS]")
+        request["id"] = args[0]
+        if len(args) == 2: request["js"] = args[1]
     elif verb in ("watch", "until"):
         rest = args[2:]
         search = rest[-1:] == ["search"]
