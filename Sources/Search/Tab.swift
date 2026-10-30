@@ -1529,10 +1529,12 @@ final class Tab: ObservableObject, Identifiable {
 
     /// Applies the tab's volume level to every media element, including
     /// ones that appear later or live inside shadow roots that call play().
+    /// Only once the tab's slider has set one: until then a page's volume
+    /// is its own, and every play() here put it back to full.
     static let volumeScript = """
     (function () {
-      if (window.__searchVol !== undefined) return;
-      window.__searchVol = 1;
+      if (window.__searchPlays) return;
+      window.__searchPlays = true;
       var play = HTMLMediaElement.prototype.play;
       HTMLMediaElement.prototype.play = function () {
         if (typeof window.__searchVol === 'number') this.volume = window.__searchVol;
