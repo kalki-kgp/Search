@@ -81,7 +81,14 @@ final class Shield: ObservableObject {
         var identifiers: [String]
         var updated: Date
         var rules: Int
+        /// What compiled them (`Shield.compiler`); none before there was one.
+        var compiler: Int?
     }
+
+    /// Raised when the compiler writes something lists compiled before it
+    /// lack, so they are redone at the next launch: 2, YouTube's ad_status.js
+    /// let through (Shield/compiler, stand_ins).
+    static let compiler = 2
 
     private var manifest: Manifest? = {
         guard let data = try? Data(contentsOf: Shield.manifestFile) else { return nil }
@@ -121,8 +128,9 @@ final class Shield: ObservableObject {
             if found.count == manifest.identifiers.count {
                 install(found)
                 describe(manifest)
-                // Lists compiled before there was a generic index are redone.
-                if Date().timeIntervalSince(manifest.updated) > Shield.freshFor || generic == nil {
+                // Lists compiled before there was a generic index, or by an
+                // older compiler, are redone.
+                if Date().timeIntervalSince(manifest.updated) > Shield.freshFor || generic == nil || manifest.compiler != Shield.compiler {
                     refreshSoon(after: 20)
                 }
             } else {
@@ -239,149 +247,64 @@ final class Shield: ObservableObject {
         return out
     }
 
-    /// YouTube's newest wall comes back as `status: "ERROR"` with an
-    /// `enforcementMessageViewModel`. It comes and goes by the request: the
-    /// same video asked for again is let through, which is why a reload
-    /// always got past it. So this reloads, at most twice for one video —
-    /// counted in sessionStorage, which outlives the reload and not the tab —
-    /// and if the wall is still there, lets YouTube's message show.
+    /// YouTube walls an account ("Ad blockers violate YouTube's Terms of
+    /// Service") when its ad-blocker tests fail, and a reload can't undo it:
+    /// the tests fail again. So they don't fail.
     ///
-    /// Until then the player is covered by Search's own wait — the breath
-    /// and the turning ring of the window's, in the page — and the wall is
-    /// never drawn. Transforms and opacity only, played by the compositor;
-    /// built when it is needed and gone after, ten seconds at the most.
+    /// - ad_status.js, which sets `google_ad_status`, is let through by the
+    ///   compiled lists on YouTube (Shield/compiler, stand_ins).
+    /// - The ad id doubleclick is asked for, and YouTube's own stats pings
+    ///   (qoe, ptracking, pagead), are answered here, at once, with an empty
+    ///   200 — what uBlock's `redirect=nooptext` gives. Nothing is sent;
+    ///   the page only sees that it went.
     ///
-    /// It used to tag the client and ask the player again in place, as
-    /// uBlock does. uBlock's own script on YouTube does that already, and
-    /// the two took turns undoing each other: a playlist was sent from
-    /// video to video, loaded again and again, with nobody touching it.
-    ///
-    /// Woken only by YouTube's own page events and a few checks after each —
-    /// no observer over the page, nothing running while a video plays.
+    /// Measured in WebKit with the compiled lists: blocked, google_ad_status
+    /// never set and five requests failing on every watch page; with this,
+    /// as with no blocker at all. In the page's own world, ahead of the
+    /// scriptlets, which wrap it in turn; wrapped as they wrap things, so
+    /// fetch and XMLHttpRequest still read as the browser's own.
     private static let youtubeWall = """
     (function () {
-      if (window.__searchWall) return;
-      window.__searchWall = true;
-      var root = document.documentElement, key = 'search.mend', tries = 0, timer = 0, cap = 0, veil = null;
-      // What the tagging kept here, no longer read.
-      try { localStorage.removeItem('search.wall'); } catch (e) {}
-      // Only YouTube's ad-block message is hidden, other errors still show.
-      // If the reloads don't get past it, search-wall on <html> lets it through.
-      var css = document.createElement('style');
-      css.textContent =
-        'html:not([search-wall]) yt-playability-error-supported-renderers:has(ytd-enforcement-message-view-model){display:none!important}' +
-        'html:not([search-wall]) ytd-watch-flexy[player-unavailable]:has(ytd-enforcement-message-view-model) :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}' +
-        'html[search-mend] yt-playability-error-supported-renderers{display:none!important}' +
-        'html[search-mend] ytd-watch-flexy[player-unavailable] :is(#player-container-outer,#player-container,#cinematics-container){visibility:visible!important}' +
-        'html[search-mend] #movie_player>:not(search-mend){opacity:0!important}';
-      root.appendChild(css);
-      // The video by its address: the same before a reload and after it.
-      function here() { return new URLSearchParams(location.search).get('v') || location.pathname; }
-      function mend() {
-        try { var n = JSON.parse(sessionStorage.getItem(key)); } catch (e) { return null; }
-        return n && n.here === here() && Date.now() - n.at < 60000 ? n : null;
+      if (window.__searchStandIn) return;
+      window.__searchStandIn = true;
+      var probe = /^https?:\\/\\/(?:googleads\\.g\\.doubleclick\\.net\\/pagead\\/id|(?:www\\.|m\\.)?youtube\\.com\\/(?:api\\/stats\\/(?:qoe|ads|atr)|ptracking|pagead\\/))/;
+      function wanted(u) {
+        try { return probe.test(new URL(u, location.href).href); } catch (e) { return false; }
       }
-      function forget() { try { sessionStorage.removeItem(key); } catch (e) {} }
-      function walled(r) {
-        var s = r && r.playabilityStatus;
-        return !!(s && s.status !== 'OK' && s.errorScreen && s.errorScreen.enforcementMessageViewModel);
-      }
-      // The wait, in a closed shadow root: YouTube's styles can't reach in,
-      // and nothing in it is a string of HTML, which YouTube's Trusted
-      // Types would refuse.
-      function make() {
-        var host = document.createElement('search-mend');
-        host.style.cssText = 'position:absolute;inset:0;z-index:2147483647;display:block;pointer-events:none';
-        var shade = host.attachShadow({ mode: 'closed' });
-        var style = document.createElement('style');
-        style.textContent =
-          '.w{position:absolute;inset:0;overflow:hidden;background:#0f0f0f;container-type:size;animation:in .24s ease-out both}' +
-          '.b{position:absolute;left:50%;top:50%;width:92cqmin;height:92cqmin;margin:-46cqmin 0 0 -46cqmin;animation:breath 2.6s ease-in-out infinite alternate}' +
-          '.a{position:absolute;inset:0;border-radius:50%;filter:blur(36px);animation:turn 9s linear infinite;' +
-            'background:conic-gradient(from 0deg,transparent,rgba(255,255,255,.3),rgba(255,48,64,.34) 30%,transparent 50%,rgba(96,128,255,.3) 72%,transparent)}' +
-          '.c{inset:18%;animation-duration:6s;animation-direction:reverse;' +
-            'background:conic-gradient(from 90deg,transparent,rgba(255,255,255,.24),transparent 40%,rgba(255,96,160,.2) 70%,transparent)}' +
-          '.r{position:absolute;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;animation:turn .85s linear infinite;' +
-            'background:conic-gradient(from 0deg,transparent 55%,rgba(255,255,255,.95));' +
-            '-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2.5px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2.5px))}' +
-          '.o{position:absolute;left:50%;top:50%;width:72px;height:72px;margin:-36px 0 0 -36px;border-radius:50%;animation:turn 2.4s linear infinite reverse;' +
-            'background:conic-gradient(from 0deg,rgba(255,255,255,.4),transparent 18%,rgba(255,255,255,.25) 50%,transparent 68%);' +
-            '-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 1.5px),#000 calc(100% - 1px));mask:radial-gradient(farthest-side,transparent calc(100% - 1.5px),#000 calc(100% - 1px))}' +
-          '.t{position:absolute;left:0;right:0;top:calc(50% + 52px);margin:0;text-align:center;color:#fff;' +
-            'font:500 13px/1.4 -apple-system,system-ui,sans-serif;letter-spacing:.02em;animation:breath 2.6s ease-in-out infinite alternate}' +
-          '@keyframes turn{to{transform:rotate(1turn)}}' +
-          '@keyframes breath{from{transform:scale(.97);opacity:.65}to{transform:scale(1.03);opacity:1}}' +
-          '@keyframes in{from{opacity:0}}' +
-          '@media (prefers-reduced-motion:reduce){.a,.b,.r,.o,.t{animation:none}}';
-        var w = document.createElement('div');
-        w.className = 'w';
-        var b = document.createElement('div');
-        b.className = 'b';
-        var a = document.createElement('div');
-        a.className = 'a';
-        var c = document.createElement('div');
-        c.className = 'a c';
-        var r = document.createElement('div');
-        r.className = 'r';
-        var o = document.createElement('div');
-        o.className = 'o';
-        var t = document.createElement('p');
-        t.className = 't';
-        t.textContent = 'Getting past YouTube\\u2019s check';
-        b.append(a, c);
-        w.append(b, o, r, t);
-        shade.append(style, w);
-        return host;
-      }
-      function mending(on) {
-        if (!on) {
-          clearTimeout(cap);
-          root.removeAttribute('search-mend');
-          if (veil) veil.remove();
-          return;
+      window.fetch = new Proxy(window.fetch, {
+        apply: function (real, self, args) {
+          var u = args[0] && (typeof args[0] === 'string' ? args[0] : args[0].url);
+          if (u && wanted(u)) return Promise.resolve(new Response('', { status: 200, statusText: 'OK' }));
+          return Reflect.apply(real, self, args);
         }
-        if (root.hasAttribute('search-mend')) return;
-        root.setAttribute('search-mend', '');
-        cap = setTimeout(function () { mending(false); }, 10000);
-        cover();
+      });
+      var asked = new WeakMap(), X = XMLHttpRequest.prototype;
+      X.open = new Proxy(X.open, {
+        apply: function (real, self, args) {
+          if (wanted(String(args[1]))) asked.set(self, String(args[1])); else asked.delete(self);
+          return Reflect.apply(real, self, args);
+        }
+      });
+      X.send = new Proxy(X.send, {
+        apply: function (real, self, args) {
+          var u = asked.get(self);
+          if (!u) return Reflect.apply(real, self, args);
+          Object.defineProperties(self, {
+            readyState: { value: 4 }, status: { value: 200 }, statusText: { value: 'OK' },
+            responseText: { value: '' }, response: { value: '' }, responseURL: { value: new URL(u, location.href).href }
+          });
+          setTimeout(function () {
+            self.dispatchEvent(new Event('readystatechange'));
+            self.dispatchEvent(new ProgressEvent('load'));
+            self.dispatchEvent(new ProgressEvent('loadend'));
+          }, 0);
+        }
+      });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon = new Proxy(navigator.sendBeacon, {
+          apply: function (real, self, args) { return wanted(String(args[0])) ? true : Reflect.apply(real, self, args); }
+        });
       }
-      // Over the player as soon as there is one; after a reload there isn't
-      // yet, so looked for again every tenth of a second while it waits.
-      function cover() {
-        if (!root.hasAttribute('search-mend')) return;
-        var p = document.getElementById('movie_player');
-        if (!p) { setTimeout(cover, 100); return; }
-        if (!veil || veil.parentNode !== p) p.appendChild(veil || (veil = make()));
-      }
-      function check() {
-        timer = 0;
-        var n = mend();
-        if (n) mending(true);
-        var p = document.getElementById('movie_player');
-        var r = p && p.getPlayerResponse && p.getPlayerResponse();
-        var id = r && r.videoDetails && r.videoDetails.videoId;
-        var v = new URLSearchParams(location.search).get('v');
-        // No answer yet, or the one for the video before, still on the
-        // player while a playlist moves on: wait for this one's.
-        if (!r || (v && id && id !== v)) { if (++tries < 12) timer = setTimeout(check, 500); else mending(false); return; }
-        if (!walled(r)) { if (n) forget(); mending(false); return; }
-        var count = n ? n.count : 0;
-        if (count >= 2) { forget(); mending(false); root.setAttribute('search-wall', ''); return; }
-        try { sessionStorage.setItem(key, JSON.stringify({ here: here(), count: count + 1, at: Date.now() })); }
-        catch (e) { mending(false); root.setAttribute('search-wall', ''); return; }
-        mending(true);
-        location.reload();
-      }
-      function soon() {
-        root.removeAttribute('search-wall');
-        tries = 0;
-        clearTimeout(timer);
-        timer = setTimeout(check, 400);
-      }
-      // Coming back from a reload this asked for: covered from the start.
-      if (mend()) mending(true);
-      window.addEventListener('yt-navigate-finish', soon);
-      window.addEventListener('yt-page-data-updated', soon);
     })();
     """
 
@@ -451,7 +374,7 @@ final class Shield: ObservableObject {
             let summary = (try? Data(contentsOf: Shield.compiled.appendingPathComponent("summary.json")))
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Int] } ?? [:]
             let count = (summary["network_rules"] ?? 0) + (summary["cosmetic_rules"] ?? 0)
-            let next = Manifest(identifiers: ids, updated: Date(), rules: count)
+            let next = Manifest(identifiers: ids, updated: Date(), rules: count, compiler: Shield.compiler)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             try encoder.encode(next).write(to: Shield.manifestFile, options: .atomic)

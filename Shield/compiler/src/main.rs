@@ -153,9 +153,10 @@ fn network(texts: &[List], out: &Path, summary: &mut Summary) {
     }
     let (rules, _) = set.into_content_blocking().expect("debug filter set");
 
-    let (exceptions, blocks): (Vec<CbRule>, Vec<CbRule>) = rules
+    let (mut exceptions, blocks): (Vec<CbRule>, Vec<CbRule>) = rules
         .into_iter()
         .partition(|r| matches!(r.action.typ, CbType::IgnorePreviousRules));
+    exceptions.extend(stand_ins());
     summary.network_rules = blocks.len();
     summary.exceptions = exceptions.len();
 
@@ -165,6 +166,28 @@ fn network(texts: &[List], out: &Path, summary: &mut Summary) {
         write(out, &format!("network-{i}.json"), &list);
         summary.network_files += 1;
     }
+}
+
+/// What uBlock and Brave answer with a stand-in, where a rule list can only
+/// block. A `$redirect` rule has no WebKit form, so it is dropped, and the
+/// plain block it overrides wins instead: the request fails, and a failed
+/// request is what the page was testing for.
+///
+/// YouTube's ad-blocker test loads static.doubleclick.net's ad_status.js,
+/// one line setting `google_ad_status = 1`, and walls the account whose
+/// copy never ran. uBlock serves that line itself; here the file itself is
+/// let through, on YouTube only. (YouTube's other tests — the ad id, its
+/// stats pings — are answered in the page without a request; see
+/// Shield.youtubeWall.)
+fn stand_ins() -> Vec<CbRule> {
+    vec![CbRule {
+        action: CbAction { typ: CbType::IgnorePreviousRules, selector: None },
+        trigger: CbTrigger {
+            url_filter: r"^https?://static\.doubleclick\.net/instream/ad_status\.js".into(),
+            if_domain: Some(vec!["*youtube.com".into()]),
+            ..Default::default()
+        },
+    }]
 }
 
 // MARK: - cosmetic
