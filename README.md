@@ -105,6 +105,8 @@ Turn on **Settings › General › Let a script drive Search** and the running a
 ```
 ./bench open https://example.com     # a tab of its own, at the end of your row, marked with a flask
 ./bench wait 2e7e7e89                 # until it has loaded
+./bench see 2e7e7e89                  # the page as a short outline, its controls numbered
+./bench click 2e7e7e89 @4             # by number, and what changed
 ./bench text 2e7e7e89                 # the page's text
 ./bench shot 2e7e7e89 out.png         # a picture of it
 ./bench click 2e7e7e89 "button.go"    # click, type, submit — through the page's own events
@@ -112,7 +114,7 @@ Turn on **Settings › General › Let a script drive Search** and the running a
 ./bench close all
 ```
 
-Bench tabs are never selected for you, never enter the session or the history, and go when the script says so. It is how this browser is tested while somebody is using it.
+Bench tabs are never selected for you, never enter the session or the history, and go when the script says so. It is how this browser is tested while somebody is using it. A script can read any tab that isn't private, which shows the flask while it does; it acts only in its own. `mcp/search-mcp` offers the same to any AI app that speaks MCP, and `skill/search-bench/SKILL.md` is how an agent uses it.
 
 `python3 Tests/split_view.py`, after `./build.sh`, checks Split View through the app's own model in a hidden test run with its own settings and files, all removed afterwards. It never makes or shows a window; what can only be seen (dragging onto a page's edge, the divider under the pointer, the motion) is checked by hand on a release candidate.
 

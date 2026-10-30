@@ -87,6 +87,8 @@ cp Shield/compiler/target/release/shield-compiler "$APP/Contents/MacOS/shield-co
 cp Shield/resources.json Shield/procedural.js Shield/generic.js "$APP/Contents/Resources/"
 # Video Speed Controller's page script, built in (Speed/README.md).
 cp Speed/speed.js Speed/speed.css "$APP/Contents/Resources/"
+# The page as ./bench's see, read and seek read it (Bench.swift).
+cp Outline/outline.js "$APP/Contents/Resources/"
 
 # Symbols stay out of the app. The linker leaves every function's name and a
 # map back to the source in the binary — 15,000 entries, more than half of

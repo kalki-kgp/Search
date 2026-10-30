@@ -489,6 +489,20 @@ final class Tab: ObservableObject, Identifiable {
     /// An extension is recording from this tab's page (see RecordingIndicator).
     @Published var recording = false
 
+    /// A script reading this page through the bench (see, read, seek, text):
+    /// the tab shows the bench's flask while it does and for a few seconds
+    /// after, so a page of yours is never read without your seeing it.
+    @Published private(set) var agentLooking = false
+    private var agentGone: DispatchWorkItem?
+
+    func lookedAtByAgent() {
+        if !agentLooking { agentLooking = true }
+        agentGone?.cancel()
+        let gone = DispatchWorkItem { [weak self] in self?.agentLooking = false }
+        agentGone = gone
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: gone)
+    }
+
     /// Not `web`: a tab asleep is muted without being woken, and hears of
     /// it when its page is built again.
     func toggleMute() {

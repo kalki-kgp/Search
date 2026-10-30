@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Search as a browser for any AI app, over MCP.
+
+A Model Context Protocol server on standard input and output, for Claude
+Desktop, Claude Code, Cursor or anything else that speaks it. It is ./bench
+in another shape: the same socket, the same commands, the same answers word
+for word (bench's render). Nothing of it runs inside Search, and Search
+answers only with Settings › General › "Let a script drive Search" on.
+
+    claude mcp add search -- /path/to/Search/mcp/search-mcp
+
+SEARCH_WORLD=NAME talks to a test world instead of the browser you use
+(see skill/search-bench/SKILL.md); SEARCH_WORLD=test for ./fresh.sh's.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+_loader = importlib.machinery.SourceFileLoader("bench", os.path.join(HERE, "..", "bench"))
+_spec = importlib.util.spec_from_loader("bench", _loader)
+bench = importlib.util.module_from_spec(_spec)
+_loader.exec_module(bench)
+
+WORLD = os.environ.get("SEARCH_WORLD") or None
+
+INSTRUCTIONS = """Search is a Mac browser you can read and drive.
+Start with tabs (every tab, a ⚗ is one you opened) or open. Read a page with see: a small page comes whole; a large one as what needs attention (lines starting with !), then sections (§name) with their size and first words. Open sections with see's sections, read their words with read, find words with seek. Things you can press or fill in are numbered [N]: pass "@N" as target to click, type and submit. Numbers last until the next see. Wait on the page with until, not sleeps.
+You can read any tab but a private one; you can act only on tabs you opened. Close the tabs you opened when you are done."""
+
+
+def tab(desc="The tab's id from tabs or open (its first characters are enough)."):
+    return {"type": "string", "description": desc}
+
+
+TOOLS = [
+    ("tabs", "Every open tab: its id, title and address. ⚗ marks the ones you opened, ● the one the person is on.", {}, []),
+    ("open", "Open an address in a new tab of your own, at the end of the row, without bringing it forward. Returns the tab's id.",
+     {"url": {"type": "string", "description": "An address, such as https://example.com."}}, ["url"]),
+    ("go", "Send a tab you opened to another address.", {"id": tab(), "url": {"type": "string"}}, ["id", "url"]),
+    ("wait", "Wait until a tab has loaded.", {"id": tab(), "seconds": {"type": "number", "description": "20 unless given."}}, ["id"]),
+    ("see", "The page in a few lines. A page that fits comes whole: headings, and what can be pressed or filled in, numbered [N]. A larger one comes as what needs attention (dialogs, banners, errors, focus — lines starting with !) and then its sections, §name, with their size and first words. Name sections to open them.",
+     {"id": tab(),
+      "sections": {"type": "array", "items": {"type": "string"}, "description": "Sections to open, by their §name (the § is optional)."},
+      "depth": {"type": "integer", "description": "How many levels of an opened section to show (1)."},
+      "max": {"type": "integer", "description": "Most lines to answer with (60)."},
+      "words": {"type": "string", "description": "Only the headings and controls that have these words."}},
+     ["id"]),
+    ("read", "The words of sections, or of the whole page: the text, with headings, without the controls.",
+     {"id": tab(),
+      "sections": {"type": "array", "items": {"type": "string"}, "description": "Sections by §name; the whole page if none."},
+      "chars": {"type": "integer", "description": "Most characters to answer with (4000)."}},
+     ["id"]),
+    ("seek", "Where words appear on the page, section by section, hidden ones included; controls that have them are numbered.",
+     {"id": tab(), "words": {"type": "string"}}, ["id", "words"]),
+    ("click", "Click something on a page you opened. Answers with where the page is now and anything new that needs attention.",
+     {"id": tab(), "target": {"type": "string", "description": "@N from see, read or seek, or a CSS selector."}}, ["id", "target"]),
+    ("type", "Fill in a field on a page you opened, as typing would, replacing what is there.",
+     {"id": tab(), "target": {"type": "string", "description": "@N or a CSS selector."}, "text": {"type": "string"}}, ["id", "target", "text"]),
+    ("submit", "Submit the form around something on a page you opened.",
+     {"id": tab(), "target": {"type": "string", "description": "@N or a CSS selector."}}, ["id", "target"]),
+    ("until", "Wait until a JavaScript expression is true on a page you opened, reading it again every 100 ms; carries on across the page being replaced.",
+     {"id": tab(), "js": {"type": "string", "description": "One expression, such as document.querySelector('.results')."},
+      "seconds": {"type": "number", "description": "10 unless given."}},
+     ["id", "js"]),
+    ("watch", "Read a JavaScript expression on a page you opened over a few seconds, and answer with each change and when it came.",
+     {"id": tab(), "js": {"type": "string"}, "seconds": {"type": "number", "description": "5 unless given."},
+      "every": {"type": "number", "description": "Milliseconds between readings (250)."}},
+     ["id", "js"]),
+    ("text", "All of a page's visible text at once. Prefer see and read, which cost far less.", {"id": tab()}, ["id"]),
+    ("eval", "Run JavaScript on a page you opened and answer with what it returns.", {"id": tab(), "js": {"type": "string"}}, ["id", "js"]),
+    ("close", "Close a tab you opened.", {"id": tab()}, ["id"]),
+]
+
+
+def request_for(name, a):
+    """The bench request a tool call stands for."""
+    r = {"do": name}
+    for key in ("id", "url", "seconds", "every", "js", "text"):
+        if key in a: r[key] = a[key]
+    if name in ("see", "read"):
+        if a.get("sections"): r["open"] = [str(s).lstrip("§/") for s in a["sections"]]
+        for key in ("depth", "max", "chars"):
+            if key in a: r[key] = int(a[key])
+        if a.get("words"): r["text"] = a["words"]
+    if name == "seek": r["text"] = a.get("words", "")
+    if name in ("click", "type", "submit"): r["selector"] = a.get("target", "")
+    if name == "type": r["text"] = a.get("text", "")
+    return r
+
+
+def call(name, a):
+    if name not in {t[0] for t in TOOLS}:
+        return f"no tool called {name}", True
+    try:
+        answer = bench.ask(os.path.join(bench.folder(WORLD), "bench.sock"), request_for(name, a))
+    except SystemExit as stop:
+        return str(stop), True
+    if answer.get("onScreen"):
+        return "a window came onto a screen in this test run: " + "; ".join(answer["onScreen"]), True
+    # The command line prints these as JSON for scripts; a model needs a line.
+    if name == "wait" and "error" not in answer:
+        if answer.get("failure"):
+            return f"failed: {answer['failure']}", True
+        if answer.get("timeout") or answer.get("loading"):
+            return f"still loading: {answer.get('url', '')}", True
+        return f"loaded: {bench.clean(answer.get('title')) or '—'} — {bench.clean(answer.get('url'))}", False
+    if name == "close" and "error" not in answer:
+        return f"closed {answer.get('closed', 0)}", False
+    out, err, code = bench.render(name, answer)
+    return "\n".join(x for x in (out, err) if x), code != 0
+
+
+def reply(message_id, result=None, error=None):
+    body = {"jsonrpc": "2.0", "id": message_id}
+    if error is not None: body["error"] = error
+    else: body["result"] = result
+    sys.stdout.write(json.dumps(body, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw: continue
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            reply(None, error={"code": -32700, "message": "not JSON"})
+            continue
+        method, mid, params = message.get("method"), message.get("id"), message.get("params") or {}
+        if mid is None:
+            continue  # a notification: initialized, cancelled
+        if method == "initialize":
+            reply(mid, {
+                "protocolVersion": params.get("protocolVersion", "2025-06-18"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "search", "version": "1"},
+                "instructions": INSTRUCTIONS,
+            })
+        elif method == "ping":
+            reply(mid, {})
+        elif method == "tools/list":
+            reply(mid, {"tools": [
+                {"name": n, "description": d, "inputSchema": {"type": "object", "properties": p, "required": req}}
+                for n, d, p, req in TOOLS
+            ]})
+        elif method == "tools/call":
+            text, failed = call(params.get("name", ""), params.get("arguments") or {})
+            reply(mid, {"content": [{"type": "text", "text": text}], "isError": failed})
+        else:
+            reply(mid, error={"code": -32601, "message": f"no method {method}"})
+
+
+if __name__ == "__main__":
+    main()

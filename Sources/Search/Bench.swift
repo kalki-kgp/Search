@@ -375,9 +375,10 @@ final class Bench {
             answer(describe(tab))
 
         case "text":
-            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
-            house(tab)
-            tab.web.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, error in
+            guard let tab = readable(request, in: browser) else { answer(missing(request)); return }
+            guard tab.built != nil, !tab.asleep else { answer(["error": "that tab is asleep: there is no page to read until it is woken"]); return }
+            if tab.bench { house(tab) } else { tab.lookedAtByAgent() }
+            Bench.pastBlank(tab.web) { tab.web.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, error in
                 MainActor.assumeIsolated {
                     if let error { answer(["error": error.localizedDescription]); return }
                     var text = (value as? String) ?? ""
@@ -385,7 +386,7 @@ final class Bench {
                     if text.count > 120_000 { text = String(text.prefix(120_000)); cut = true }
                     answer(["text": text, "truncated": cut, "url": tab.address?.absoluteString ?? "", "title": tab.title])
                 }
-            }
+            } }
 
         case "eval":
             guard let tab = find(request, in: browser) else { answer(missing(request)); return }
@@ -408,20 +409,35 @@ final class Bench {
                 }
             }
 
-        case "see":
-            // The page as an agent needs it, in a few hundred words: headings,
-            // and what can be pressed or filled in, each with a number that
-            // click, type, submit and tap take as @N. The numbers are kept in
+        case "see", "read", "seek":
+            // The page as an agent needs it (Outline/outline.js). `see`: a
+            // small page whole, a big one as sections with their size and
+            // first words, each opened by name, and what needs attention
+            // first; `read`: the words of sections; `seek`: where words are.
+            // Numbers for click, type, submit and tap (@N) are kept in
             // Search's own world, where the page can't see or move them.
-            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
-            house(tab)
-            let most = max(1, min(request["max"] as? Int ?? 60, 2000))
-            tab.web.evaluateJavaScript(Bench.see(most: most, matching: request["text"] as? String ?? ""), in: nil, in: Web.world) { result in
+            // Any tab but a private one can be read; only the bench's own
+            // can be acted on.
+            guard let tab = readable(request, in: browser) else { answer(missing(request)); return }
+            guard let built = tab.built, !tab.asleep else { answer(["error": "that tab is asleep: there is no page to read until it is woken"]); return }
+            if tab.bench { house(tab) } else { tab.lookedAtByAgent() }
+            var options: [String: Any] = ["mode": verb, "most": max(1, min(request["max"] as? Int ?? 60, 2000))]
+            if let words = request["text"] as? String { options["want"] = words }
+            if let open = request["open"] as? [String] { options["open"] = open }
+            if let depth = request["depth"] as? Int { options["depth"] = depth }
+            if let chars = request["chars"] as? Int { options["chars"] = chars }
+            if verb == "seek", (options["want"] as? String ?? "").isEmpty { answer(["error": "seek needs words to look for"]); return }
+            options["last"] = looks[tab.id] ?? NSNull()
+            guard let script = Bench.outline(options) else { answer(["error": "Outline/outline.js is missing from this build"]); return }
+            Bench.pastBlank(built) { built.evaluateJavaScript(script, in: nil, in: Web.world) { [weak self] result in
                 switch result {
-                case .success(let value): answer(["page": (value as? String) ?? "", "loading": tab.web.isLoading])
+                case .success(let value):
+                    let got = value as? [String: Any] ?? [:]
+                    if let look = got["look"] { self?.remember(look, for: tab) }
+                    answer(["page": got["text"] as? String ?? "", "loading": built.isLoading])
                 case .failure(let error): answer(["error": error.localizedDescription])
                 }
-            }
+            } }
 
         case "watch", "until":
             // An expression read again every so often, in the page: `watch`
@@ -530,7 +546,26 @@ final class Bench {
                 switch result {
                 case .success(let value):
                     let said = (value as? String) ?? "?"
-                    answer(said == "ok" ? ["ok": true] : ["error": said])
+                    guard said == "ok" else { answer(["error": said]); return }
+                    // And what it did, a moment later: where the page is,
+                    // what needs attention, what changed — the look an
+                    // agent would otherwise spend a call on.
+                    // A click that loads a page is let finish first, three
+                    // seconds at most, so what is said is about where it went.
+                    let web = tab.web
+                    @MainActor func settled(_ left: Int) {
+                        if web.isLoading, left > 0 {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled(left - 1) }
+                            return
+                        }
+                        guard let brief = Bench.outline(["mode": "brief", "last": self.looks[tab.id] ?? NSNull()]) else { answer(["ok": true]); return }
+                        web.evaluateJavaScript(brief, in: nil, in: Web.world) { [weak self] after in
+                            let got = (try? after.get()) as? [String: Any] ?? [:]
+                            if let look = got["look"] { self?.remember(look, for: tab) }
+                            answer(["ok": true, "after": got["text"] as? String ?? ""])
+                        }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { settled(26) }
                 case .failure(let error): answer(["error": error.localizedDescription])
                 }
             }
@@ -2291,7 +2326,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "watch", "until",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "watch", "until",
             ]])
         }
     }
@@ -2793,6 +2828,25 @@ final class Bench {
         return browser.tabs.first { (Store.testing || $0.bench) && $0.id.uuidString.lowercased().hasPrefix(ref) }
     }
 
+    /// The last look at each tab an agent read — its address and the ids of
+    /// its sections — so the next can say what changed, even after the page
+    /// was replaced. A few dozen at most.
+    private var looks: [UUID: Any] = [:]
+
+    private func remember(_ look: Any, for tab: Tab) {
+        if looks.count > 40, looks[tab.id] == nil { looks.removeAll() }
+        looks[tab.id] = look
+    }
+
+    /// A tab to read: any in any window, but never
+    /// a private one outside a test run. Acting on a page is still `find`'s,
+    /// the bench's own tabs only.
+    private func readable(_ request: [String: Any], in browser: Browser) -> Tab? {
+        guard let ref = (request["id"] as? String)?.lowercased(), !ref.isEmpty else { return nil }
+        let all = [browser] + Browsers.all.filter { $0 !== browser }
+        return all.lazy.flatMap(\.tabs).first { (Store.testing || !$0.shy) && $0.id.uuidString.lowercased().hasPrefix(ref) }
+    }
+
     private func missing(_ request: [String: Any]) -> [String: Any] {
         ["error": "no tab “\(request["id"] as? String ?? "")” — see tabs"]
     }
@@ -3043,75 +3097,33 @@ final class Bench {
         selector.hasPrefix("@") ? Web.world : .page
     }
 
-    /// `see`: one pass over the page, in document order. Only what has a box
-    /// on the page; a control inside a link or button it is part of is left
-    /// to that one. Names as a screen reader would find them, cut at 70.
-    private static func see(most: Int, matching: String) -> String {
-        let want = (try? JSONSerialization.data(withJSONObject: [matching.lowercased()])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
-        return """
-        (function (most, want) {
-          var press = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[contenteditable=""],[contenteditable=true],' +
-            '[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=switch],[role=textbox],[role=combobox],[role=option],[role=slider]';
-          var all = document.querySelectorAll(press + ',h1,h2,h3,dialog[open],[role=dialog],[role=alert]');
-          var seen = [null], lines = [], more = 0, high = innerHeight;
-          // Cut short without splitting a character in two: half of one is
-          // a string WebKit won't hand back.
-          function trim(t, n) { if (t.length <= n) return t; t = t.slice(0, n - 1); return (/[\\uD800-\\uDBFF]$/.test(t) ? t.slice(0, -1) : t) + '\\u2026'; }
-          function cut(t) { return trim((t || '').replace(/\\s+/g, ' ').trim(), 70); }
-          function name(el) {
-            var t = el.getAttribute('aria-label');
-            var by = el.getAttribute('aria-labelledby');
-            if (!t && by) t = by.split(/\\s+/).map(function (i) { var e = document.getElementById(i); return e ? e.innerText : ''; }).join(' ');
-            if (!t && el.labels && el.labels.length) t = el.labels[0].innerText;
-            if (!t && !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) t = el.innerText;
-            var img = !t && el.querySelector && el.querySelector('img[alt]');
-            return cut(t || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || (img && img.alt) || el.getAttribute('name'));
-          }
-          function kind(el) {
-            var role = el.getAttribute('role');
-            if (role) return role;
-            var tag = el.tagName.toLowerCase();
-            if (tag === 'a') return 'link';
-            if (tag === 'input') {
-              return { checkbox: 'checkbox', radio: 'radio', submit: 'button', button: 'button', reset: 'button', image: 'button', range: 'slider', file: 'file' }[(el.type || '').toLowerCase()] || 'textbox';
-            }
-            if (tag === 'textarea' || el.isContentEditable) return 'textbox';
-            if (tag === 'summary') return 'button';
-            return tag;
-          }
-          for (var i = 0; i < all.length; i++) {
-            var el = all[i], r = el.getBoundingClientRect();
-            if (r.width < 1 || r.height < 1) continue;
-            if (el.checkVisibility && !el.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
-            var where = r.bottom < 0 ? ' \\u2191' : r.top > high ? ' \\u2193' : '';
-            if (!el.matches(press)) {
-              var head = (/^H\\d$/.test(el.tagName) ? el.tagName.toLowerCase() : 'dialog') + ' "' + cut(el.innerText) + '"';
-              if (want && head.toLowerCase().indexOf(want) < 0) continue;
-              if (lines.length >= most) { more++; continue; }
-              lines.push(head + where);
-              continue;
-            }
-            var up = el.parentElement && el.parentElement.closest('a[href],button,[role=button],[role=link]');
-            if (up && seen.indexOf(up) > 0) continue;
-            var line = kind(el) + ' "' + name(el) + '"';
-            if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== 'checkbox' && el.type !== 'radio') line += ' =' + JSON.stringify(cut(el.value));
-            if (el.checked || el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true') line += ' checked';
-            if (el.disabled || el.getAttribute('aria-disabled') === 'true') line += ' disabled';
-            if (el.tagName === 'A') {
-              var to = el.href;
-              if (to.indexOf(location.origin) === 0) to = to.slice(location.origin.length);
-              line += ' \\u2192 ' + trim(to, 60);
-            }
-            if (want && line.toLowerCase().indexOf(want) < 0) continue;
-            if (lines.length >= most) { more++; continue; }
-            lines.push('[' + seen.length + '] ' + line + where);
-            seen.push(el);
-          }
-          window.__benchSeen = seen;
-          if (more) lines.push('\\u2026 ' + more + ' more: see ID ' + most * 2 + (want ? ' ' + want : '') + ', or a few words to look for: see ID ' + most + ' WORDS');
-          return [document.title + ' \\u2014 ' + location.href].concat(lines).join('\\n');
-        })(\(most), \(want))
-        """
+    /// A tab just opened is on a blank page until its address arrives, and
+    /// the blank page is complete, so anything read then reads nothing.
+    /// Up to ten seconds for the address to take its place.
+    static func pastBlank(_ web: WKWebView, tries: Int = 100, then go: @escaping () -> Void) {
+        let blank = web.url == nil || web.url?.absoluteString == "about:blank"
+        guard blank, web.isLoading, tries > 0 else { go(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { pastBlank(web, tries: tries - 1, then: go) }
+    }
+
+    /// Outline/outline.js, called with these options: from the app's
+    /// Resources, or for a `swift build` binary, which has none, the
+    /// repository's own copy beside these sources.
+    private static let outlineSource: String? = {
+        var places = [Bundle.main.url(forResource: "outline", withExtension: "js")]
+        #if DEBUG
+        places.append(URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Outline/outline.js"))
+        #endif
+        return places.lazy.compactMap { $0.flatMap { try? String(contentsOf: $0, encoding: .utf8) } }.first
+    }()
+
+    static func outline(_ options: [String: Any]) -> String? {
+        guard let source = outlineSource,
+              let data = try? JSONSerialization.data(withJSONObject: options),
+              let json = String(data: data, encoding: .utf8)
+        else { return nil }
+        return source + "(" + json + ")"
     }
 
     /// `watch` and `until`: the expression read every `every` ms for

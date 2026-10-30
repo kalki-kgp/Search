@@ -868,7 +868,7 @@ private struct TabPill: View {
                 .animation(Motion.quick, value: tab.noisy)
 
                 if !showMedia {
-                    if tab.bench {
+                    if tab.bench || tab.agentLooking {
                         Image(systemName: "flask")
                             .font(.system(size: 9))
                             .foregroundStyle(colour.opacity(0.7))
