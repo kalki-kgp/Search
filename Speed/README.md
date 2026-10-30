@@ -13,4 +13,9 @@ settings requests from chrome.storage. Search answers them instead (see
 Sources/Search/Speed.swift), and loads `speed.js` into a frame only once
 that frame has a video or audio element.
 
+WebKit has no `requestIdleCallback`, and the page script calls it unguarded,
+so Speed.swift hands it a stand-in of its own and adds what the script's
+`loadeddata` wait misses. Both are wrapped around `speed.js`, which stays as
+built.
+
 To update: build a newer checkout the same way and copy the two files over.

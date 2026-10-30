@@ -36,6 +36,7 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Fixed
 
+- The speed controls come on for every video without a reload. Their watch over the page needed a function WebKit doesn't have, and failed at each change, so a video added after the first look went without them: on YouTube, Shorts opened after a regular video. A video caught mid-seek as they arrived also waited for ever; it now gets them when it next plays.
 - A site's own volume stays as it set it: each `play()` put it back to full, whether or not the tab's slider had been touched.
 - A video paused from Search stays paused: the tab's sound button, ⇧⌘M and the floating window's play button now ask the page's own player to stop, as the keyboard's ⏯ does, where before the video was stopped behind the player's back and YouTube started it again seconds later. The floating window's button also works on a video that hasn't said how long it is yet
 - YouTube's "Ad blockers violate YouTube's Terms of Service" wall no longer comes up, and a video from a playlist stays put. YouTube's answers carry the wall unseen, and its own page code writes it over a video that was fine when one of its tests finds a blocker; in a playlist it then skips on every few seconds, which is what sent videos changing by themselves. Search keeps the answer as it came, so the video plays with no reload and nothing to wait for. Ads are still blocked. The first YouTube tab after Search opens gets the ad blocker's scripts too
