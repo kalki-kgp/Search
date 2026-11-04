@@ -1420,6 +1420,12 @@ struct TabMenu: View {
                 Button("Change Letter") { browser.editLetter(tab) }
             }
             Button("Unpin") { browser.unpin(tab) }
+            // Away for good in one go, where Unpin, finding the row and its
+            // × took three (#834); ⇧⌘T brings it back as a tab.
+            Button("Delete") {
+                browser.unpin(tab)
+                browser.close(tab)
+            }
         }
         if browser.prefs.usesSpaces, !tab.bench,
            tab.address.flatMap({ Browser.extensionHost(of: $0) }) == nil {
