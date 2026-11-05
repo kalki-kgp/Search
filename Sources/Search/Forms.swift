@@ -166,14 +166,51 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       // boxes still hold it is not put to sleep: waking it couldn't bring
       // that back. A box emptied by sending — a chat's composer — no longer
       // counts, and neither does a search box.
+      //
+      // A one-line box keeps what you sent from it on pages that change
+      // without loading — YouTube's search box still holds the words on the
+      // video you went to from the results. Its words are sent, not waiting:
+      // so a one-line box counts only while it is still on the address it
+      // was typed on, with no Return or submit since, and its words aren't
+      // in the address already. Long text — a textarea, an editor — keeps
+      // the strict rule: it counts until the box is emptied.
       var typed = [];
+      var where = new WeakMap();
       document.addEventListener('input', function (e) {
         if (!e.isTrusted) return;
         var el = e.target;
-        if (!el || typed.indexOf(el) >= 0) return;
+        if (!el) return;
+        where.set(el, { at: location.href, sent: false });
+        if (typed.indexOf(el) >= 0) return;
         typed.push(el);
         if (typed.length > 40) typed.shift();
       }, true);
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+        var mark = e.target && where.get(e.target);
+        if (mark && (e.target.tagName || '').toLowerCase() === 'input') mark.sent = true;
+      }, true);
+      document.addEventListener('submit', function (e) {
+        var form = e.target;
+        for (var i = 0; i < typed.length; i++) {
+          var mark = where.get(typed[i]);
+          if (mark && form && form.contains && form.contains(typed[i])) mark.sent = true;
+        }
+      }, true);
+      function searchy(el) {
+        var role = (el.getAttribute('role') || '').toLowerCase();
+        if (el.type === 'search' || role === 'searchbox' || role === 'combobox') return true;
+        if (el.closest && el.closest('[role="search"], form[action*="search"]')) return true;
+        var said = [el.name, el.id, el.placeholder, el.getAttribute('aria-label')].join(' ');
+        return /search|query|^q$/i.test(said) || el.name === 'q';
+      }
+      function inAddress(text) {
+        var words = text.trim().toLowerCase();
+        if (!words) return false;
+        var here = location.href;
+        try { here = decodeURIComponent(here.replace(/\\+/g, ' ')); } catch (e) {}
+        return here.toLowerCase().indexOf(words) >= 0;
+      }
       function unsaved() {
         for (var i = 0; i < typed.length; i++) {
           var el = typed[i];
@@ -184,7 +221,11 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
           } else if (tag === 'input') {
             var kind = (el.type || 'text').toLowerCase();
             if (['text', 'email', 'url', 'tel', 'number'].indexOf(kind) < 0) continue;
-            if (el.value.trim() && el.value !== el.defaultValue) return true;
+            if (!el.value.trim() || el.value === el.defaultValue) continue;
+            var mark = where.get(el);
+            if (searchy(el) || inAddress(el.value)) continue;
+            if (mark && (mark.sent || mark.at !== location.href)) continue;
+            return true;
           } else if (el.isContentEditable) {
             if ((el.textContent || '').trim()) return true;
           }

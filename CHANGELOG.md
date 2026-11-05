@@ -36,6 +36,7 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Fixed
 
+- A tab you reached from a search sleeps again. YouTube's search box still holds your words on the video you opened from the results, and Search took them for something typed and not sent, so a video tab never gave its memory back: two of them held about a gigabyte each for a day. A one-line box's words now count as sent once Return is pressed, the page has moved on, or the words are in its address; a half-written message still keeps its tab awake
 - The speed controls come on for every video without a reload. Their watch over the page needed a function WebKit doesn't have, and failed at each change, so a video added after the first look went without them: on YouTube, Shorts opened after a regular video. A video caught mid-seek as they arrived also waited for ever; it now gets them when it next plays.
 - A site's own volume stays as it set it: each `play()` put it back to full, whether or not the tab's slider had been touched.
 - A video paused from Search stays paused: the tab's sound button, ⇧⌘M and the floating window's play button now ask the page's own player to stop, as the keyboard's ⏯ does, where before the video was stopped behind the player's back and YouTube started it again seconds later. The floating window's button also works on a video that hasn't said how long it is yet
