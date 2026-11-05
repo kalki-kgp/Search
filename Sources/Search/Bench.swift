@@ -2882,6 +2882,16 @@ final class Bench {
             "extensions": { if #available(macOS 15.4, *) { return tab.carriesExtensions } else { return false } }(),
             // The page's WebKit process, for measuring what it holds.
             "process": tab.built.flatMap { $0.value(forKey: "_webProcessIdentifier") as? Int } ?? 0,
+            // That process's memory, in MB, as macOS counts it.
+            "memoryMB": tab.built
+                .flatMap { $0.value(forKey: "_webProcessIdentifier") as? Int }
+                .flatMap(Machine.footprint)
+                .map { Int($0 / 1_048_576) } ?? 0,
+            // What keeps it awake right now, if anything (Sleep.swift); then
+            // what Sleep last heard when it tried.
+            "awakeBecause": browser?.awake(because: tab) ?? "",
+            "sleepAnswer": tab.sleepAnswer ?? "",
+            "usualAbsence": Int(Doze.usualAbsence(tab)),
         ]
     }
 
