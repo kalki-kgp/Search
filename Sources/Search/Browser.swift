@@ -1082,6 +1082,7 @@ final class Browser: NSObject, ObservableObject {
         // are the searches learned from sites visited (SiteSearch.swift).
         Favicons.shared.forgetAll()
         SiteSearch.forget()
+        Habits.forget()
         announce("History cleared")
     }
 
@@ -1534,10 +1535,6 @@ final class Browser: NSObject, ObservableObject {
     private var lastClear: (batch: UUID, blank: Tab.ID?)?
 
     private var bag = Set<AnyCancellable>()
-    /// The minute-by-minute look for tabs to put to sleep, and the ear for
-    /// macOS saying memory is short. See Sleep.swift.
-    var dozing: Timer?
-    var pressure: DispatchSourceMemoryPressure?
     /// Downloads still under way. See `keep(_:)`.
     var downloading: [WKDownload] = []
     /// alert(), confirm() and prompt() from tabs that weren't in front,
@@ -2444,6 +2441,7 @@ final class Browser: NSObject, ObservableObject {
             looked = nil
             editing = false
             typed = ""
+            tab.cameBack()
             activeID = tab.id
             tab.touch()
             rememberSession()
@@ -2674,6 +2672,9 @@ final class Browser: NSObject, ObservableObject {
         // it is never lifted and landed in the same breath.
         if floating == tab.id { land() }
         if floatPrevious { leaving() }
+        // How long you were away from it is something Sleep learns from
+        // (Sleep.swift).
+        tab.cameBack()
         activeID = tab.id
         tab.touch()
         // A tab brought back from last time, or waking from ⌘W while pinned,
@@ -4829,6 +4830,8 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         (webView as? PageView)?.showFirstFrame()
         guard let tab = anyTab(for: webView), let url = tab.address else { return }
         tab.uncover()
+        // A tab that slept: its video back where you left it.
+        tab.returnToPlace()
         // The find bar still open over a page that has just come in: look
         // for the same words on it.
         if tab.id == activeID, finding, findSpec == nil,

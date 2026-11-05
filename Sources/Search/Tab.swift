@@ -1207,6 +1207,103 @@ final class Tab: ObservableObject, Identifiable {
         discard()
     }
 
+    // MARK: - coming back to where you were
+
+    /// The longest video or recording on the page and how far into it you
+    /// were, taken as the tab goes to sleep. The page's history brings back
+    /// its scroll position but not this: a video at 2:07 came back at 0:00.
+    private var place: (time: Double, length: Double)?
+    /// Set on waking, for the first finished load to put the video back.
+    private var placing: (time: Double, length: Double)?
+
+    /// What the page's media is doing, read in Search's own world. One
+    /// line per element: where it is, how long it is, whether it is heard.
+    static let mediaProbe = """
+    (function () {
+      var out = [];
+      document.querySelectorAll('video, audio').forEach(function (m) {
+        var length = isFinite(m.duration) ? m.duration : -1;
+        out.push({ t: m.currentTime || 0, d: length, e: m.ended,
+                   heard: !m.paused && !m.ended && !m.muted && m.volume > 0 });
+      });
+      return JSON.stringify(out);
+    })()
+    """
+
+    /// Asked just before sleeping: whether the page is playing sound
+    /// WebKit's flag missed (it once said silent over a hidden tab playing
+    /// aloud), and where its main video was. Nothing heard, nothing kept,
+    /// for a page that can't answer.
+    func listen(_ done: @escaping (_ heard: Bool) -> Void) {
+        guard let built else { return done(false) }
+        let muted = self.muted
+        built.evaluateInSearch(Tab.mediaProbe) { [weak self] value in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let text = value as? String,
+                      let list = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [[String: Any]]
+                else { return done(false) }
+                let heard = !muted && list.contains { $0["heard"] as? Bool == true }
+                let main = list
+                    .filter { ($0["d"] as? Double ?? -1) > 0 && $0["e"] as? Bool != true }
+                    .max { ($0["d"] as? Double ?? 0) < ($1["d"] as? Double ?? 0) }
+                if let main, let time = main["t"] as? Double, let length = main["d"] as? Double, time > 3 {
+                    self.place = (time, length)
+                } else {
+                    self.place = nil
+                }
+                done(heard)
+            }
+        }
+    }
+
+    /// After a tab that slept has loaded again: its video back where it
+    /// was. The player takes a moment to exist and to know its length, so
+    /// the page looks for it a few times a second for up to fifteen, and
+    /// moves only the element of the same length — not an advert or a
+    /// preview that got there first.
+    func returnToPlace() {
+        guard let to = placing, let built else { return }
+        placing = nil
+        built.evaluateInSearch("""
+        (function (time, length) {
+          var tries = 0;
+          (function look() {
+            var found = null;
+            document.querySelectorAll('video, audio').forEach(function (m) {
+              if (isFinite(m.duration) && Math.abs(m.duration - length) < 2) found = m;
+            });
+            if (found && found.readyState >= 1) {
+              if (Math.abs(found.currentTime - time) > 2) found.currentTime = time;
+              return;
+            }
+            if (++tries < 60) setTimeout(look, 250);
+          })();
+        })(\(to.time), \(to.length))
+        """)
+    }
+
+    // MARK: - how you use it
+
+    /// How long you were away each time you came back to this tab, the last
+    /// eight. Sleep reads these to tell a tab you keep returning to from
+    /// one you opened once and left.
+    private(set) var gaps: [TimeInterval] = []
+
+    /// Coming back to this tab: `touched` still says when you left it.
+    /// Flicking through tabs in under half a minute isn't being away.
+    func cameBack() {
+        let gap = unseenFor
+        guard gap >= 30, !shy else { return }
+        gaps.append(gap)
+        if gaps.count > 8 { gaps.removeFirst() }
+        if let host = address?.host() { Habits.note(gap, for: host) }
+    }
+
+    /// The last thing Sleep was told when it tried this tab — "asleep", or
+    /// what kept it awake. For `./bench tabs`, and for you to ask.
+    var sleepAnswer: String?
+
     /// A page moved to another space must use that space's cookies. WebKit
     /// binds the store when the view is made, so keep its restorable state
     /// and build the view again with the destination's store.
@@ -1428,6 +1525,8 @@ final class Tab: ObservableObject, Identifiable {
         immersed = false
         let state = memory
         memory = nil
+        placing = place
+        place = nil
         if let picture, let image = NSImage(data: picture) {
             cover = image
             // Whatever happens to the page, the picture doesn't outstay it.
@@ -1455,7 +1554,19 @@ final class Tab: ObservableObject, Identifiable {
         icon = nil
     }
 
-    func touch() { touched = Date() }
+    func touch() {
+        touched = Date()
+        touchedAwake = ProcessInfo.processInfo.systemUptime
+    }
+
+    /// The same moment on a clock that stops while the Mac sleeps. Sleep
+    /// counts how long a tab has been left by this one: a night with the lid
+    /// shut is not a night of not using it, and every tab reloading the next
+    /// morning was exactly what it is for.
+    private(set) var touchedAwake = ProcessInfo.processInfo.systemUptime
+
+    /// How long the Mac has been awake since you last looked at this tab.
+    var unseenFor: TimeInterval { ProcessInfo.processInfo.systemUptime - touchedAwake }
 
     /// True when the web view holds nothing — never loaded, or emptied —
     /// while the tab still names a page. The white page, in other words.
