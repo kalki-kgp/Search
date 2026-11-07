@@ -333,7 +333,7 @@ struct DownloadsPanel: View {
         private var stateLabel: String {
             switch entry.state {
             case .downloading: return "Downloading"
-            case .pausing: return "Pausing…"
+            case .pausing: return entry.stopping
             case .paused: return "Paused"
             case .resuming: return "Resuming…"
             case .failed: return "Failed"
@@ -405,7 +405,7 @@ struct DownloadsPanel: View {
                 }
             case .pausing:
                 HStack(spacing: 4) {
-                    Quick("Pausing…", act: {})
+                    Quick(entry.stopping, act: {})
                         .disabled(true)
                     Quick("Cancel", act: cancel)
                 }
