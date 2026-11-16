@@ -65,12 +65,16 @@ enum Vault {
     /// on the page you saved it from — accounts.example.com asks, and the
     /// password was kept for example.com. So the site is matched as a site:
     /// the host first, then anything sharing its registrable domain.
-    static func logins(matching host: String) -> [Login] {
+    ///
+    /// `secrets: false` is for the list under a field: names only, so clicking
+    /// into a box reads no password (each read is a keychain prompt for an
+    /// app whose signature changed). The one picked is read in `secret(of:)`.
+    static func logins(matching host: String, secrets: Bool = true) -> [Login] {
         let domain = registrable(host)
-        let exact = logins(for: host)
+        let exact = rows(where: [kSecAttrServer as String: host]).compactMap { login(from: $0, secret: secrets) }
         let wider = rows(where: [:])
             .filter { ($0[kSecAttrServer as String] as? String).map { $0 != host && registrable($0) == domain } ?? false }
-            .compactMap(login(from:))
+            .compactMap { login(from: $0, secret: secrets) }
         return (exact + wider).sorted { ($0.used ?? .distantPast) > ($1.used ?? .distantPast) }
     }
 
@@ -124,6 +128,11 @@ enum Vault {
     /// password is shown or copied, and never as part of a list.
     static func secret(of kept: Kept) -> String? { secret(host: kept.host, user: kept.user) }
 
+    /// A login listed without its password (see `logins(matching:secrets:)`), read now.
+    static func secret(of login: Login) -> String? {
+        login.password.isEmpty ? secret(host: login.host, user: login.user) : login.password
+    }
+
     /// What an item's attributes say beyond its name: when it was last used,
     /// and whether it was kept from a page sent in the clear.
     private static func noted(_ row: [String: Any]) -> (used: Date?, clear: Bool) {
@@ -136,10 +145,12 @@ enum Vault {
 
     /// One item with its secret, for the paths that hand a password over:
     /// filling a sign-in in, and telling whether one is already kept.
-    private static func login(from row: [String: Any]) -> Login? {
+    private static func login(from row: [String: Any]) -> Login? { login(from: row, secret: true) }
+
+    private static func login(from row: [String: Any], secret withSecret: Bool) -> Login? {
         guard let host = row[kSecAttrServer as String] as? String,
               let user = row[kSecAttrAccount as String] as? String,
-              let password = secret(host: host, user: user)
+              let password = withSecret ? secret(host: host, user: user) : ""
         else { return nil }
         let (used, clear) = noted(row)
         return Login(host: host, user: user, password: password, used: used, clear: clear)

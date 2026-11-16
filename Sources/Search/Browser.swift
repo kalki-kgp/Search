@@ -739,7 +739,7 @@ final class Browser: NSObject, ObservableObject {
         // Passwords only for a box that goes with one: a box for passkeys
         // alone has no password to put anywhere.
         let known = prefs.fillsPasswords && passwords
-            ? Array(Vault.logins(matching: host).filter { !inTheClear || $0.clear }.prefix(5)) : []
+            ? Array(Vault.logins(matching: host, secrets: false).filter { !inTheClear || $0.clear }.prefix(5)) : []
         let passkeys = Passkeys.shared.offered(in: tab.built)
         guard !known.isEmpty || !passkeys.isEmpty else {
             suggesting = nil
@@ -765,11 +765,18 @@ final class Browser: NSObject, ObservableObject {
         guard curtain.host(of: tab.pageAddress) == list.host,
               (tab.pageAddress?.scheme?.lowercased() == "http") == list.clear
         else { return }
+        // The list held names only; the password is read now, for this one.
+        guard let password = Vault.secret(of: login) else {
+            announce("The keychain refused it")
+            return
+        }
+        var picked = login
+        picked.password = password
         pickedInto = tab.id
-        tab.fill(user: login.user, password: login.password) { [weak self] worked in
+        tab.fill(user: picked.user, password: picked.password) { [weak self] worked in
             if !worked { self?.announce("Couldn't find the sign-in fields anymore") }
         }
-        Vault.touch(login)
+        Vault.touch(picked)
     }
 
     /// One of the passkeys in the list: the Mac's sheet for it, and the

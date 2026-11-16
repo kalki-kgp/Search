@@ -222,7 +222,16 @@ if [ -f "Search.provisionprofile" ]; then
   ENTITLEMENTS="Search.passkeys.entitlements"
   echo "passkeys: profile embedded"
 fi
-if [ -n "$IDENTITY" ]; then
+# No Developer ID: a local certificate that stays the same across builds
+# (scripts make one, "Kalki Local Signing"), so the keychain and privacy
+# grants given to one build hold for the next. An ad-hoc signature is a new
+# app to macOS every time, and every saved password asks again. No hardened
+# runtime here: without a team ID it would refuse Search's own frameworks.
+LOCAL_IDENTITY="${SEARCH_LOCAL_IDENTITY:-Kalki Local Signing}"
+if [ -z "$IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$LOCAL_IDENTITY\""; then
+  codesign --force --deep --sign "$LOCAL_IDENTITY" "$APP"
+  echo "signed locally as: $LOCAL_IDENTITY"
+elif [ -n "$IDENTITY" ]; then
   codesign --force --deep --timestamp --options runtime \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" "$APP"
