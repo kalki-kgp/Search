@@ -25,7 +25,7 @@
 //! job.json: { "lists": [{"path": "...", "permission": 1, "protected": true}],
 //! "resources": "resources.json", "out": "dir" }
 
-use adblock::content_blocking::{CbAction, CbRule, CbTrigger, CbType};
+use adblock::content_blocking::{CbAction, CbLoadType, CbRule, CbTrigger, CbType};
 use adblock::filters::cosmetic::{CosmeticFilter, CosmeticFilterMask};
 use adblock::lists::{FilterSet, ParseOptions, ParsedLine, RuleTypes, parse_filter};
 use adblock::resources::{PermissionMask, Resource};
@@ -143,15 +143,32 @@ fn main() {
 
 // MARK: - network
 
+/// As Brave's default (Standard) blocking: a list with first-party
+/// protections blocks only what a page loads from other sites. A site's own
+/// requests — Google's sign-in and verification calls on google.com, say —
+/// go through unless a rule names them first-party (`$1p`), or a list
+/// without the protections (the cookie-notice ones) has them. Blocking them
+/// all is Brave's Aggressive mode, and it breaks sites that wait on their own
+/// calls: Play Console's document check spun forever on a blocked
+/// `payments.google.com/log`.
 fn network(texts: &[List], out: &Path, summary: &mut Summary) {
-    let mut set = FilterSet::new(true);
-    for list in texts {
-        set.add_filter_list(
-            list.text.clone(),
-            ParseOptions { rule_types: RuleTypes::NetworkOnly, permissions: list.permissions, ..Default::default() },
-        );
+    let mut rules: Vec<CbRule> = Vec::new();
+    for protected in [true, false] {
+        let mut set = FilterSet::new(true);
+        for list in texts.iter().filter(|l| l.protected == protected) {
+            set.add_filter_list(
+                list.text.clone(),
+                ParseOptions { rule_types: RuleTypes::NetworkOnly, permissions: list.permissions, ..Default::default() },
+            );
+        }
+        let (group, _) = set.into_content_blocking().expect("debug filter set");
+        rules.extend(group.into_iter().map(|mut r| {
+            if protected && r.trigger.load_type.is_empty() && !matches!(r.action.typ, CbType::IgnorePreviousRules) {
+                r.trigger.load_type = vec![CbLoadType::ThirdParty];
+            }
+            r
+        }));
     }
-    let (rules, _) = set.into_content_blocking().expect("debug filter set");
 
     let (mut exceptions, blocks): (Vec<CbRule>, Vec<CbRule>) = rules
         .into_iter()

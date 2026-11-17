@@ -87,8 +87,9 @@ final class Shield: ObservableObject {
 
     /// Raised when the compiler writes something lists compiled before it
     /// lack, so they are redone at the next launch: 2, YouTube's ad_status.js
-    /// let through (Shield/compiler, stand_ins).
-    static let compiler = 2
+    /// let through (Shield/compiler, stand_ins); 3, a site's own requests
+    /// left alone, as in Brave's Standard mode (Shield/compiler, network).
+    static let compiler = 3
 
     private var manifest: Manifest? = {
         guard let data = try? Data(contentsOf: Shield.manifestFile) else { return nil }
