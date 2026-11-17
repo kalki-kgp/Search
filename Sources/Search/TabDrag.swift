@@ -193,6 +193,7 @@ final class TabDrag: ObservableObject {
     /// event as the source of truth: synthesized drags need not move macOS's
     /// global mouse location at the same time.
     func pointer(in browser: Browser) -> NSPoint {
+        if let handed = Bench.handedPointer, Store.testing { return handed }
         if let window = browser.window, let event = NSApp.currentEvent,
            event.window === window,
            event.type == .leftMouseDragged || event.type == .leftMouseUp {
