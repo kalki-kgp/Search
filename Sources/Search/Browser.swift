@@ -3058,10 +3058,21 @@ final class Browser: NSObject, ObservableObject {
         destination.receive(tab)
         if target == nil {
             // Dragged out: the new window where the tab was let go, its row
-            // under the hand.
+            // under the hand, on whichever screen that is and kept inside it.
+            // A window filling the laptop's screen would hang off a smaller
+            // monitor's edge at its own size.
             let frame = point.map { p -> NSRect in
-                let size = window?.frame.size ?? NSSize(width: 1180, height: 780)
-                return NSRect(x: p.x - 120, y: p.y - size.height + 20, width: size.width, height: size.height)
+                var size = window?.frame.size ?? NSSize(width: 1180, height: 780)
+                let screen = NSScreen.screens.first { $0.frame.contains(p) } ?? window?.screen ?? NSScreen.main
+                guard let room = screen?.visibleFrame else {
+                    return NSRect(x: p.x - 120, y: p.y - size.height + 20, width: size.width, height: size.height)
+                }
+                size.width = min(size.width, room.width)
+                size.height = min(size.height, room.height)
+                let x = min(max(p.x - 120, room.minX), room.maxX - size.width)
+                let top = min(p.y + 20, room.maxY)
+                let y = max(top - size.height, room.minY)
+                return NSRect(x: x, y: y, width: size.width, height: size.height)
             }
             Browsers.open(destination, frame: frame)
         } else {
@@ -3069,19 +3080,33 @@ final class Browser: NSObject, ObservableObject {
         }
     }
 
-    /// A tab dragged out of the row and let go outside this window: into
-    /// the window it was let go over, or a new one there, as in Chrome and
-    /// Safari. False when it was let go over this window, where the drag
-    /// keeps its meaning, or can't leave (a pin).
-    func dragOut(_ tab: Tab, at point: NSPoint = NSEvent.mouseLocation) -> Bool {
-        guard tab.pin == nil, !tab.bench, let window,
-              !window.frame.insetBy(dx: -12, dy: -12).contains(point)
-        else { return false }
-        let over = Browsers.all.first { $0 !== self && $0.isOpen && $0.window?.frame.contains(point) == true }
+    /// A tab dragged out of the row and let go outside this window, or
+    /// `torn` off it (pulled well clear of the row, see Carried): into the
+    /// window it was let go over, or a new one there, as in Chrome and
+    /// Safari. False when it was let go over this window without being torn
+    /// off, where the drag keeps its meaning, or can't leave (a pin, or the
+    /// only tab with no other window to go to).
+    func dragOut(_ tab: Tab, at point: NSPoint = NSEvent.mouseLocation, torn: Bool = false) -> Bool {
+        guard canTear(tab), let window else { return false }
+        // The window in front under the hand, not merely one whose frame
+        // holds the point: this one may cover another. (Not `isVisible`: a
+        // test run's windows wait behind a hidden app.)
+        let top = NSApp.orderedWindows.first { w in
+            !w.isMiniaturized && w.frame.contains(point) && Browsers.browser(for: w)?.isOpen == true
+        }
+        let over = Browsers.browser(for: top).flatMap { $0 === self ? nil : $0 }
+        if over == nil, !torn, window.frame.insetBy(dx: -12, dy: -12).contains(point) { return false }
         guard over != nil || tabs.count > 1 else { return false }
         // After the drag has let go, not inside it.
         DispatchQueue.main.async { [weak self] in self?.moveToWindow(tab, over, at: point) }
         return true
+    }
+
+    /// Whether a tab could leave this window by a drag: not a pin, and not
+    /// the last tab here unless another window can take it.
+    func canTear(_ tab: Tab) -> Bool {
+        guard tab.pin == nil, !tab.bench else { return false }
+        return tabs.count > 1 || Browsers.all.contains { $0 !== self && $0.isOpen }
     }
 
     /// Out of this row, not closed: it is on its way to another window.

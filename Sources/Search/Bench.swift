@@ -587,7 +587,9 @@ final class Bench {
             guard let tab = find(request, in: browser) else { answer(missing(request)); return }
             if let at = request["at"] as? [Double], at.count == 2 {
                 // Let go at a point of the screen, as a drag out of the row.
-                let taken = browser.dragOut(tab, at: NSPoint(x: at[0], y: at[1]))
+                // "torn": pulled clear of the row first, so letting go over
+                // this window still takes it to a new one.
+                let taken = browser.dragOut(tab, at: NSPoint(x: at[0], y: at[1]), torn: request["torn"] as? Bool == true)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { answer(["taken": taken, "windows": Browsers.all.count]) }
                 return
             }
@@ -2353,6 +2355,10 @@ final class Bench {
 
     /// The view a `split mouse … to: view` press landed on, for the rest of it.
     private weak var pressed: NSView?
+    /// Where a drag handed straight to a view (`split mouse … to=view`) is,
+    /// on the screen: no event of the app's carries it, and the real mouse
+    /// is wherever the person at the Mac left it (see TabDrag.pointer).
+    static var handedPointer: NSPoint?
 
     private func splitCommand(
         _ request: [String: Any],
@@ -2450,6 +2456,7 @@ final class Bench {
                 // the press instead, as `tap` does, for what the view itself
                 // does with them.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.02 * Double(index)) {
+                    Bench.handedPointer = direct ? window.convertToScreen(NSRect(origin: point, size: .zero)).origin : nil
                     guard direct else { NSApp.sendEvent(event); return }
                     if type == .leftMouseDown {
                         let root = window.contentView?.superview
