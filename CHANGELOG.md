@@ -40,6 +40,7 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Fixed
 
+- The ad blocker leaves a site's own requests alone, as Brave does by default: its lists block what a page loads from other sites, not the site's calls to itself, unless a rule says first-party or the list is one Brave applies everywhere. Blocking them all is Brave's Aggressive mode, and it stalled Google Play Console's document check, which spun on "Running a quick check" and never finished while the same upload went through in Brave. Lists compiled before are redone at the next launch
 - A tab you reached from a search sleeps again. YouTube's search box still holds your words on the video you opened from the results, and Search took them for something typed and not sent, so a video tab never gave its memory back: two of them held about a gigabyte each for a day. A one-line box's words now count as sent once Return is pressed, the page has moved on, or the words are in its address; a half-written message still keeps its tab awake
 - A tab playing aloud is never put to sleep when WebKit's own flag says it is quiet: its page's media is asked as well, just before
 - The speed controls come on for every video without a reload. Their watch over the page needed a function WebKit doesn't have, and failed at each change, so a video added after the first look went without them: on YouTube, Shorts opened after a regular video. A video caught mid-seek as they arrived also waited for ever; it now gets them when it next plays.
