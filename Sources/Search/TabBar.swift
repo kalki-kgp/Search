@@ -333,12 +333,12 @@ struct TabBar: View {
             }
             .modifier(Carried(index: index, count: count, step: step, vertical: false,
                               space: "strip", onDropTab: { source, point in drop(source, at: point) },
-                              outside: { browser.dragOut(tab) }, browser: browser, tab: tab,
+                              outside: { browser.dragOut(tab, at: TabDrag.shared.pointer(in: browser)) }, browser: browser, tab: tab,
                               lift: { up in
                                   home.lifted = up
                                   if up { home.peekTicket += 1; peek = nil }
                                   if up, hovered != nil { withAnimation(Motion.glide) { hovered = nil } }
-                              }) {
+                              }, tearAway: TabDrag.tearAway) {
                 if browser.prefs.usesTabGroups && tab.pin == nil {
                     browser.move(tab, within: group, to: $0)
                 } else {
@@ -1024,9 +1024,17 @@ struct Carried: ViewModifier {
     var tab: Tab? = nil
     /// Told when the tab is picked up and put down again.
     var lift: ((Bool) -> Void)? = nil
+    /// How far across the row (down or up out of the top row) the tab is
+    /// pulled before it comes off it, bound for a window of its own when let
+    /// go, as in Chrome and Safari. Nil: it never does (the column, whose
+    /// tabs are dragged sideways onto a page).
+    var tearAway: CGFloat? = nil
     let move: (Int) -> Void
 
     @State private var held = false
+    /// Pulled clear of the row: the others stay put, and a chip follows the
+    /// hand (see TearChip).
+    @State private var torn = false
     @State private var from = 0
     @State private var travel: CGFloat = 0
 
@@ -1042,6 +1050,7 @@ struct Carried: ViewModifier {
             // and leaves the place's running: the tab jumped a whole slot and
             // drifted back each time it passed one. Only the others glide.
             .transaction { if held { $0.animation = nil } }
+            .opacity(torn ? 0.35 : 1)
             .zIndex(held ? 1 : 0)
             .shadow(color: .black.opacity(held ? 0.14 : 0), radius: 12, y: 4)
             .gesture(
@@ -1053,15 +1062,36 @@ struct Carried: ViewModifier {
                             lift?(true)
                         }
                         travel = vertical ? value.translation.height : value.translation.width
+                        if let tearAway, let browser, let tab {
+                            let across = abs(vertical ? value.translation.width : value.translation.height)
+                            // Once off, it comes back onto the row only near it.
+                            let off = across > (torn ? tearAway * 0.5 : tearAway) && browser.canTear(tab)
+                            if off != torn {
+                                torn = off
+                                if off { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
+                            }
+                        }
                         if let browser, let tab, browser.prefs.splitView,
                            TabDrag.shared.update(browser: browser, tab: tab,
-                                                 translation: value.translation) { return }
+                                                 translation: value.translation) {
+                            // A split shown on a page's edge: that, not a window.
+                            TearChip.shared.hide()
+                            return
+                        }
+                        if torn, let browser, let tab {
+                            TearChip.shared.show(tab, at: TabDrag.shared.pointer(in: browser))
+                            return
+                        }
+                        TearChip.shared.hide()
                         let target = min(max(0, from + Int((travel / step).rounded())), count - 1)
                         if target != index {
                             withAnimation(Motion.settle) { move(target) }
                         }
                     }
                     .onEnded { value in
+                        let torn = self.torn
+                        self.torn = false
+                        TearChip.shared.hide()
                         if let browser, let tab, browser.prefs.splitView {
                             let finished = TabDrag.shared.finish(browser: browser, tab: tab)
                             let source = finished.source
@@ -1073,13 +1103,16 @@ struct Carried: ViewModifier {
                                 if let onDropTab { onDropTab(source, value.location) }
                                 else if source.id == tab.id { onDrop?(value.location) }
                             case .outside:
-                                if !browser.dragOut(source, at: finished.point) {
+                                if !browser.dragOut(source, at: finished.point, torn: torn) {
                                     if let onDropTab { onDropTab(source, value.location) }
                                     else if source.id == tab.id { onDrop?(value.location) }
                                 }
                             case .cancelled:
                                 move(from)
                             }
+                        } else if torn, let browser, let tab,
+                                  browser.dragOut(tab, at: TabDrag.shared.pointer(in: browser), torn: true) {
+                            // Off to a window of its own.
                         } else if outside?() != true {
                             if let onDropTab, let tab { onDropTab(tab, value.location) }
                             else { onDrop?(value.location) }
@@ -1094,6 +1127,8 @@ struct Carried: ViewModifier {
             .onReceive(TabDrag.shared.$cancelledID) { id in
                 guard id == tab?.id, held else { return }
                 move(from)
+                torn = false
+                TearChip.shared.hide()
                 held = false
                 travel = 0
             }

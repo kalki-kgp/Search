@@ -13,6 +13,7 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Added
 
+- A tab pulled down out of the top row comes off it: a small pill with its title follows the hand, and letting go opens it in a window of its own right there, on whichever screen that is, or puts it in the Search window it was let go over. Brought back to the row before letting go, it stays. As in Chrome and Safari; a pin, or the only tab of the only window, stays where it is
 - Tabs reload far less. A tab no longer sleeps after half an hour unseen, only when the Mac is short of memory: when it starts writing memory out to the disk, or has less than a sixth left, as well as on macOS's own warning, which never came on a 16 GB Mac that reached 8 GB of swap. The tab that goes first is the one holding the most for being the least missed, learned from how long you usually stay away from that tab and that site; time with the lid shut doesn't count as time away. With room to spare, only a tab left for six times its usual absence, and at least an hour, goes
 - A video in a tab that slept comes back where you were in it, not at the start
 - `./bench tabs` says how much memory each page's process holds, what keeps a tab awake, what Sleep last heard when it tried, and how long you usually stay away from it

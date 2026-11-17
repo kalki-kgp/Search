@@ -93,6 +93,10 @@ final class TabDrag: ObservableObject {
     /// carried straight across.
     static let settle: CGFloat = 6
     static let still: TimeInterval = 0.09
+    /// How far down (or up) out of the top row a tab is pulled before it
+    /// comes off it for a window of its own: the hand a little below the
+    /// row (52 high, picked up about its middle), clear of a slip.
+    static let tearAway: CGFloat = 40
 
     /// Where the pointer has been lately, for whether it has settled.
     private var trail: [(point: NSPoint, at: TimeInterval)] = []
@@ -188,7 +192,7 @@ final class TabDrag: ObservableObject {
     /// The drag callback is delivered with a window-local NSEvent. Use that
     /// event as the source of truth: synthesized drags need not move macOS's
     /// global mouse location at the same time.
-    private func pointer(in browser: Browser) -> NSPoint {
+    func pointer(in browser: Browser) -> NSPoint {
         if let window = browser.window, let event = NSApp.currentEvent,
            event.window === window,
            event.type == .leftMouseDragged || event.type == .leftMouseUp {
@@ -276,5 +280,84 @@ final class TabDrag: ObservableObject {
                 && view.tab.map({ pair.contains($0.id) }) == true
                 && window.convertToScreen(view.convert(view.bounds, to: nil)).contains(point)
         }?.tab ?? gesture
+    }
+}
+
+/// What a tab pulled clear of its row looks like on the way to a window of
+/// its own: a small pill with its icon and title under the hand. One plain
+/// AppKit panel, made when a tab is torn off and gone when it's let go — no
+/// picture of the page, nothing kept between drags.
+@MainActor
+final class TearChip {
+    static let shared = TearChip()
+
+    private var panel: NSPanel?
+    private var shownID: Tab.ID?
+    private static let size = NSSize(width: 220, height: 30)
+
+    private init() {}
+
+    var showing: Bool { panel != nil }
+
+    /// Under the hand at `point` (screen), the tab's row just above it, as
+    /// the new window's row will be when it's let go.
+    func show(_ tab: Tab, at point: NSPoint) {
+        // A test run shows nothing on a screen (see Bench.watchScreens).
+        guard !Store.testing else { return }
+        let panel = panel ?? make()
+        if shownID != tab.id { dress(panel, with: tab) }
+        panel.setFrameOrigin(NSPoint(x: point.x - 24, y: point.y - TearChip.size.height + 8))
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+        panel = nil
+        shownID = nil
+    }
+
+    private func make() -> NSPanel {
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: TearChip.size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isReleasedWhenClosed = false
+        panel.level = .popUpMenu
+        panel.ignoresMouseEvents = true
+        panel.hasShadow = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        let card = NSView(frame: NSRect(origin: .zero, size: TearChip.size))
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 9
+        card.layer?.masksToBounds = true
+        card.layer?.borderWidth = 0.5
+        panel.contentView = card
+        self.panel = panel
+        return panel
+    }
+
+    private func dress(_ panel: NSPanel, with tab: Tab) {
+        shownID = tab.id
+        guard let card = panel.contentView else { return }
+        card.subviews.forEach { $0.removeFromSuperview() }
+        // Resolved against the app's look now; a chip lives a second or two.
+        card.effectiveAppearance.performAsCurrentDrawingAppearance {
+            card.layer?.backgroundColor = Palette.NS.wash.cgColor
+            card.layer?.borderColor = Palette.NS.faint.cgColor
+        }
+        var x: CGFloat = 10
+        if let icon = tab.icon {
+            let view = NSImageView(frame: NSRect(x: x, y: 7, width: 16, height: 16))
+            view.image = icon
+            view.imageScaling = .scaleProportionallyUpOrDown
+            card.addSubview(view)
+            x += 22
+        }
+        let label = NSTextField(labelWithString: tab.label)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = Palette.NS.ink
+        label.lineBreakMode = .byTruncatingTail
+        label.frame = NSRect(x: x, y: 7, width: TearChip.size.width - x - 10, height: 16)
+        card.addSubview(label)
     }
 }
