@@ -1648,6 +1648,10 @@ final class Tab: ObservableObject, Identifiable {
     /// next time anyone asks for it.
     private func discard() {
         watch = []
+        // The page still loading goes with its view, and what said so goes
+        // first: its stopLoading below is heard by no one. Left set, a pin
+        // put down mid-load spun on its row for good.
+        if loading { loading = false }
         ears.stop()
         camera = .none
         microphone = .none
