@@ -47,14 +47,73 @@
     return s.slice(0, 24).replace(/-+$/, '');
   }
 
+  // An icon drawn from a font of ligatures: its words are the icon's name
+  // ("chevron_right", "expand_more"), not anything the page says.
+  var ICON = '.material-icons,.material-icons-outlined,.material-icons-round,.material-icons-sharp,.material-symbols-outlined,' +
+    '.material-symbols-rounded,.material-symbols-sharp,.material-icons-extended,.material-icon-i,.google-material-icons,.google-symbols,mat-icon,material-icon';
+  function icon(el) {
+    return el.matches && el.matches(ICON) && /^[a-z0-9_]+$/.test(squash(el.textContent));
+  }
+  // Its words without its icons'; an element that is only an icon keeps
+  // the icon's name, the one word there is.
+  function textOf(el) {
+    if (!el.querySelector || !el.querySelector(ICON)) return el.innerText;
+    var copy = el.cloneNode(true);
+    Array.prototype.forEach.call(copy.querySelectorAll(ICON), function (i) { if (icon(i)) i.remove(); });
+    return squash(copy.textContent) || el.innerText;
+  }
+  function choice(el) {
+    var r = el.getAttribute('role');
+    return (el.tagName === 'INPUT' && /^(checkbox|radio)$/.test(el.type)) || r === 'checkbox' || r === 'radio';
+  }
   function name(el) {
     var t = el.getAttribute('aria-label');
     var by = el.getAttribute('aria-labelledby');
     if (!t && by) t = by.split(/\s+/).map(function (i) { var e = document.getElementById(i); return e ? e.innerText : ''; }).join(' ');
-    if (!t && el.labels && el.labels.length) t = el.labels[0].innerText;
-    if (!t && !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) t = el.innerText;
+    if (!t && el.labels && el.labels.length) t = textOf(el.labels[0]);
+    // A checkbox or radio a kit drew a box for is named by the words beside
+    // it, in the element that holds both.
+    if (!squash(t) && choice(el) && el.tagName === 'INPUT') {
+      for (var up = el.parentElement, i = 0; up && i < 4 && !squash(t); up = up.parentElement, i++) {
+        var said = squash(textOf(up));
+        if (said.length < 200) t = said;
+      }
+    }
+    if (!t && !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) t = textOf(el);
     var img = !squash(t) && el.querySelector && el.querySelector('img[alt]');
     return cut(t || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || (img && img.alt) || el.getAttribute('name'));
+  }
+
+  // The choices asked together, and what they answer: a radiogroup or
+  // fieldset by its own name, or else the nearest element around them that
+  // also holds the words of a question.
+  function group(el) {
+    var g = el.closest('[role=radiogroup],[role=group],fieldset');
+    if (g) return g;
+    var sel = el.type === 'radio' || el.getAttribute('role') === 'radio' ? 'input[type=radio],[role=radio]' : 'input[type=checkbox],[role=checkbox]';
+    for (var up = el.parentElement, i = 0; up && i < 6; up = up.parentElement, i++) {
+      if (up.querySelectorAll(sel).length > 1) return up;
+    }
+    return null;
+  }
+  var questions = [];
+  function question(el) {
+    var g = group(el);
+    if (!g) return null;
+    for (var k = 0; k < questions.length; k++) if (questions[k].g === g) return questions[k];
+    var q = g.getAttribute('aria-label') || '';
+    var by = g.getAttribute('aria-labelledby');
+    if (!q && by) q = by.split(/\s+/).map(function (i) { var e = document.getElementById(i); return e ? e.innerText : ''; }).join(' ');
+    if (!q && g.tagName === 'FIELDSET' && g.querySelector('legend')) q = g.querySelector('legend').innerText;
+    // The line nearest above that asks: the group's own words first, then
+    // the elements around it, a few levels out.
+    for (var up = g, i = 0; !squash(q) && up && i < 5; up = up.parentElement, i++) {
+      var asked = (up.innerText || '').split('\n').filter(function (l) { return /\?\s*$/.test(l) || /\?\s+\(/.test(l); });
+      if (asked.length) q = asked[asked.length > 1 && up !== g ? 0 : asked.length - 1];
+    }
+    var found = { g: g, text: cut(q, 110) };
+    questions.push(found);
+    return found.text ? found : null;
   }
   function kind(el) {
     var role = el.getAttribute('role');
@@ -72,11 +131,17 @@
     return k === 'link' ? 'links' : /^(textbox|select|checkbox|radio|slider|file|combobox|switch)$/.test(k) ? 'fields' : 'buttons';
   }
 
-  // Numbers for what is printed, kept in this world for click @N.
-  var seen = [null];
+  // Numbers for what is printed, kept in this world for click @N. They
+  // last as long as the element does: a number once given is that
+  // element's, through every look at the same document, and a gone
+  // element's number is never handed to another.
+  var prior = window.__benchSeen;
+  var seen = prior && prior.length < 5000 ? prior.map(function (e) { return e && e.isConnected ? e : null; }) : [null];
+  var printed = [];
   function ref(el) {
     var at = seen.indexOf(el);
     if (at < 0) { at = seen.length; seen.push(el); }
+    if (printed.indexOf(el) < 0) printed.push(el);
     return '[' + at + ']';
   }
   function where(el) {
@@ -89,6 +154,7 @@
     if (el.checked || el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true') line += ' checked';
     if (el.getAttribute('aria-expanded') === 'false') line += ' collapsed';
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') line += ' disabled';
+    if (!choice(el)) line += onHover(el);
     if (el.tagName === 'A') {
       var to = el.href;
       if (to.indexOf(location.origin) === 0) to = to.slice(location.origin.length);
@@ -101,7 +167,98 @@
   // out as display:contents, which has none of its own while its children do.
   function shown(el) {
     if (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true, opacityProperty: true }) : el.getClientRects().length) return 1;
+    // A checkbox or radio made see-through over the box a kit draws for it
+    // (Material and most others): the box is what shows, the input is what
+    // works and what says whether it is checked.
+    if (el.tagName === 'INPUT' && /^(checkbox|radio)$/.test(el.type) && el.getClientRects().length &&
+        el.checkVisibility && el.checkVisibility({ visibilityProperty: true }) &&
+        el.parentElement && el.parentElement.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return 1;
+    // In a small bar of buttons kept see-through until the pointer is over
+    // what it belongs to (a tile's Select, a row's Delete): there to press
+    // all the same. 3: shown, on hover.
+    if (bar(el)) return 3;
     return getComputedStyle(el).display === 'contents' ? 2 : 0;
+  }
+  // The see-through bar el is in, or is: small, with something to press in
+  // it, in an element that shows.
+  function bar(el) {
+    if (!el.getClientRects().length || !el.checkVisibility || !el.checkVisibility({ visibilityProperty: true })) return null;
+    for (var up = el, i = 0; up && i < 4; up = up.parentElement, i++) {
+      if (getComputedStyle(up).opacity !== '0') continue;
+      var b = up.getBoundingClientRect();
+      if (b.width * b.height < 40000 && up.querySelector('button,a[href],[role=button],[role=checkbox],[role=radio]') &&
+          up.parentElement && up.parentElement.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return up;
+      return null;
+    }
+    return null;
+  }
+  // A control that shows only on hover, and what it is on: the nearest
+  // element around it with a name of its own.
+  function onHover(el) {
+    var up = bar(el);
+    if (!up) return '';
+    for (var at = up.parentElement, k = 0; at && k < 5; at = at.parentElement, k++) {
+      var said = at.getAttribute('aria-label');
+      if (said) return ' (shows on hover, on "' + cut(said, 50) + '")';
+    }
+    return ' (shows on hover)';
+  }
+
+  // ---- before and after an action (Bench: click, type, submit, pick)
+
+  // What says an element's state, and every button's: whether it can be
+  // pressed. Kept in this world as the action starts; brief tells what moved.
+  function state(el) {
+    return { checked: !!el.checked, aria: el.getAttribute('aria-checked'), expanded: el.getAttribute('aria-expanded'),
+      selected: el.getAttribute('aria-selected'), value: 'value' in el ? String(el.value).slice(0, 60) : null };
+  }
+  function pressable() {
+    return Array.prototype.slice.call(document.querySelectorAll('button,[role=button],input[type=submit]'), 0, 600)
+      .filter(function (b) { return b.getClientRects().length; })
+      .map(function (b) { return [b, !!(b.disabled || b.getAttribute('aria-disabled') === 'true')]; });
+  }
+  function resolve(s) {
+    if (!s) return null;
+    if (s[0] === '@') { var e = (window.__benchSeen || [])[+s.slice(1)]; return e && e.isConnected ? e : null; }
+    if (s.indexOf('text=') === 0) {
+      var want_ = s.slice(5).trim().toLowerCase();
+      return Array.prototype.find.call(document.querySelectorAll('button, a, [role=button], input[type=submit]'), function (e) {
+        return ((e.innerText || e.value || '').trim().toLowerCase()) === want_;
+      }) || null;
+    }
+    try { return document.querySelector(s); } catch (e) { return null; }
+  }
+  if (o.mode === 'snap') {
+    var at = resolve(o.selector);
+    window.__benchSnap = at ? { el: at, state: state(at), buttons: pressable() } : null;
+    return { text: at ? 'ok' : '' };
+  }
+
+  // A checkbox or radio by the question it answers and the words of the
+  // answer. More than one that fits is said, not guessed at: "No" is an
+  // answer to half the questions on a form.
+  if (o.mode === 'pick') {
+    var ask = squash(o.question || '').toLowerCase(), answer = squash(o.answer || '').toLowerCase();
+    var all = Array.prototype.filter.call(document.querySelectorAll('input[type=radio],input[type=checkbox],[role=radio],[role=checkbox]'),
+      function (e) { return shown(e) === 1 && e.getClientRects().length && !(e.parentElement && e.parentElement.closest('[aria-hidden=true]')); });
+    var fits = all.map(function (e) { var q = question(e); return { e: e, q: q ? q.text : '', n: name(e) }; })
+      .filter(function (c) { return !ask || c.q.toLowerCase().indexOf(ask) >= 0; });
+    function by(test) { return fits.filter(function (c) { return test(c.n.toLowerCase()); }); }
+    var got = by(function (n) { return n === answer; });
+    if (!got.length) got = by(function (n) { return n.indexOf(answer) === 0; });
+    if (!got.length) got = by(function (n) { return n.indexOf(answer) >= 0; });
+    function list(cs) { return cs.slice(0, 12).map(function (c) { return (c.q ? '"' + trim(c.q, 60) + '" → ' : '') + '"' + trim(c.n, 50) + '"'; }).join('\n  '); }
+    if (!got.length) {
+      return { text: 'no choice says "' + o.answer + '"' + (ask ? ' under a question with "' + o.question + '"' : '') +
+        (fits.length ? '; there is:\n  ' + list(fits) : all.length ? '' : ': no checkbox or radio on the page') };
+    }
+    var groups = got.filter(function (c, i) { return got.findIndex(function (d) { return question(d.e) && question(c.e) ? question(d.e).g === question(c.e).g : d.e === c.e; }) === i; });
+    if (groups.length > 1) return { text: 'more than one fits — name the question: bench pick ID "QUESTION WORDS" "' + o.answer + '"\n  ' + list(got) };
+    var c = got[0];
+    ref(c.e);
+    window.__benchSeen = seen;
+    var on = !!(c.e.checked || c.e.getAttribute('aria-checked') === 'true');
+    return { text: 'ok', at: '@' + seen.indexOf(c.e), said: (c.q ? c.q + ' → ' : '') + c.n, already: on };
   }
 
   // ---- the tree
@@ -210,6 +367,8 @@
     if (el.nodeType !== 1 || SKIP.test(el.tagName) || ++visited > LIMIT) return;
     var box = shown(el);
     if (!box) return;
+    // An icon's ligature isn't words on the page.
+    if (icon(el)) return;
     var depthIn = stack.length, wasInside = inside, n;
 
     if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
@@ -396,6 +555,17 @@
   }
   var lines = [], cutoff = 0;
   function line(t) { if (lines.length < most) lines.push(t); else cutoff++; }
+  // A control's line, and before the first choice of a question, the
+  // question: `? "Is this data processed ephemerally?"`.
+  var asking = null;
+  function item(c, pad) {
+    if (choice(c)) {
+      var q = question(c);
+      if (q && q !== asking) line((pad || '') + '? "' + q.text + '"');
+      asking = q;
+    } else asking = null;
+    line((pad || '') + control(c));
+  }
 
   function attend() {
     var out = [];
@@ -446,7 +616,7 @@
       return;
     }
     if (n.type === 'item') {
-      controlsIn(n).forEach(function (c) { line(inner + control(c)); });
+      controlsIn(n).forEach(function (c) { item(c, inner); });
       if (n.words) line(inner + 'text \u2014 ' + n.words + ' words \u00b7 "' + cut(n.text.join(' '), 100) + '"');
       return;
     }
@@ -457,7 +627,7 @@
     }
     var mine = n.controls.filter(function (c) { return said.indexOf(c) < 0; });
     var show = named ? mine.length : Math.min(mine.length, 8);
-    mine.slice(0, show).forEach(function (c) { line(inner + control(c)); });
+    mine.slice(0, show).forEach(function (c) { item(c, inner); });
     if (show < mine.length) line(inner + '… ' + (mine.length - show) + ' more to press: see ID §' + n.id);
     var own = n.words - n.kids.reduce(function (s, k) { return s + k.words; }, 0);
     if (own > 12) line(inner + 'text — ' + own + ' words · "' + cut(n.preview, 80) + '" — read ID §' + n.id);
@@ -476,7 +646,7 @@
     (function each(n) {
       if (n.type === 'heading') line('h' + n.level + ' "' + cut(n.label, 70) + '"' + where(n.el));
       if (n.type === 'collapsed') n.controls.forEach(function (c) { line(control(c) + ' opens ' + n.hidden + ' hidden words'); });
-      else n.controls.forEach(function (c) { if (said.indexOf(c) < 0) line(control(c)); });
+      else n.controls.forEach(function (c) { if (said.indexOf(c) < 0) item(c); });
       n.kids.forEach(each);
     })(root);
   }
@@ -497,7 +667,7 @@
 
   var head = cut(document.title, 100) + ' — ' + location.href;
   var attn = attend();
-  var said = seen.slice();
+  var said = printed.slice();
   // Attention lines without their numbers, to tell a new one from one
   // already said.
   look.attn = attn.map(function (a) { return a.replace(/\[\d+\] /g, ''); });
@@ -519,7 +689,35 @@
     var before = (o.last && o.last.attn) || [];
     var fresh = attn.filter(function (a, i) { return before.indexOf(look.attn[i]) < 0; });
     var c = changes();
-    return { text: [location.href].concat(fresh, c ? [c] : []).join('\n'), look: look };
+    return { text: [location.href].concat(effect(), fresh, c ? [c] : []).join('\n'), look: look };
+  }
+  // What the action did to what it acted on, and to the buttons: one checked
+  // now, a field's new value, Save that can be pressed now. Nothing moved on
+  // a checkbox or radio is said too — the page didn't take the click.
+  function effect() {
+    var snap = window.__benchSnap;
+    window.__benchSnap = null;
+    if (!snap || !snap.el) return [];
+    var el = snap.el, was = snap.state, out = [];
+    if (!el.isConnected) return ['effect: it is gone from the page'];
+    var now = state(el);
+    function on(s) { return s.checked || s.aria === 'true'; }
+    if (choice(el) && on(was) !== on(now)) out.push(on(now) ? 'checked' : 'unchecked');
+    if (was.expanded !== now.expanded && now.expanded) out.push(now.expanded === 'true' ? 'opened' : 'closed');
+    if (was.selected !== now.selected && now.selected === 'true') out.push('selected');
+    if (!choice(el) && was.value !== now.value && now.value !== null) out.push('now ' + JSON.stringify(cut(now.value, 40)));
+    var moved = [];
+    snap.buttons.forEach(function (pair) {
+      var b = pair[0];
+      if (!b.isConnected || !b.getClientRects().length) return;
+      var off = !!(b.disabled || b.getAttribute('aria-disabled') === 'true');
+      if (off !== pair[1] && moved.length < 4) moved.push(control(b).replace(/ disabled$/, '') + (off ? ' disabled' : ' can be pressed'));
+    });
+    if (!out.length && !moved.length && choice(el)) {
+      var radio = el.type === 'radio' || el.getAttribute('role') === 'radio';
+      return [radio && on(was) && on(now) ? 'effect: it was already chosen' : 'effect: nothing changed — the page didn\'t take it; try tap'];
+    }
+    return out.length || moved.length ? ['effect: ' + out.concat(moved).join('; ')] : [];
   }
   if (o.mode === 'read') {
     var parts = (o.open && o.open.length ? o.open : ['page']).map(function (id) {
@@ -550,7 +748,10 @@
     // Only what has the words, as see with words always did.
     (function each(n) {
       if (n.type === 'heading' && n.label.toLowerCase().indexOf(want) >= 0) line('h' + n.level + ' "' + cut(n.label, 70) + '"' + where(n.el));
-      n.controls.forEach(function (c) { var l = control(c); if (l.toLowerCase().indexOf(want) >= 0) line(l); });
+      n.controls.forEach(function (c) {
+        var q = choice(c) && question(c);
+        if ((name(c) + ' ' + (c.href || '') + ' ' + (q ? q.text : '')).toLowerCase().indexOf(want) >= 0) item(c);
+      });
       n.kids.forEach(each);
     })(root);
     if (!lines.length) line('nothing to press or fill in says "' + want + '": seek ID ' + want + ' looks in the words too');

@@ -14,7 +14,15 @@
     ./bench resize W H [STEPS]         take the window to W×H in steps, like a drag — --test runs only
     ./bench key ID TEXT                press keys on a tab as real key events — --test runs only
     ./bench press CODE CHARS [MODS…]   press a key on the whole app (cmd shift ctrl opt, repeat) — --test runs only
-    ./bench tap ID SELECTOR [MODS…]    a real mouse click on an element (or text=Words), shift/cmd/opt held — --test runs only
+    ./bench tap ID SELECTOR [MODS…]    a real mouse click on an element (or text=Words), shift/cmd/opt held — bench tabs, or
+                                       anything on a --test run
+    ./bench pick ID [QUESTION] ANSWER [tap]
+                                       a checkbox or radio by the words of its question and its answer, clicked
+                                       (tap: a real mouse click); one already chosen is left alone; more than one
+                                       that fits is listed, not guessed
+    ./bench upload ID SELECTOR PATH…   tap the button that opens a file chooser, and answer the chooser with
+                                       these files — bench tabs only
+    ./bench show ID                    bring a bench tab to the front of its window, to watch it
     ./bench text ID                    the page's text
     ./bench eval ID JS [search]        run JavaScript, print what it returns; search: in Search's own world
     ./bench see ID [MAX] [§SECTION…] [depth N] [WORDS…]
@@ -215,7 +223,7 @@ def render(verb, answer):
         if not got.get("met"):
             return "", f"not true after {answer.get('waited')} s; last: {got.get('value')}", 1
         return f"after {answer.get('waited')} s: {got.get('value')}", "", 0
-    if verb in ("click", "type", "submit", "tap") and answer.get("ok"):
+    if verb in ("click", "type", "submit", "tap", "pick", "upload") and answer.get("ok"):
         after = clean_lines(answer.get("after", ""))
         return "ok" + ("\n" + after if after else ""), "", 0
     if verb in ("eval", "ext-popup"):
@@ -264,7 +272,7 @@ def main(argv):
         if not args: sys.exit("usage: bench wait ID [SECONDS]")
         request["id"] = args[0]
         if len(args) > 1: request["seconds"] = float(args[1])
-    elif verb in ("text", "close", "sleep", "select", "visible"):
+    elif verb in ("text", "close", "sleep", "select", "visible", "show"):
         if len(args) != 1: sys.exit(f"usage: bench {verb} ID")
         request["id"] = args[0]
     elif verb == "eval":
@@ -299,6 +307,19 @@ def main(argv):
         if len(args) != 2 + len(mods): sys.exit(f"usage: bench {verb} ID SELECTOR" + (" [shift] [cmd] [opt]" if verb == "tap" else ""))
         request["id"], request["selector"] = args[:2]
         if mods: request["mods"] = mods
+    elif verb == "pick":
+        rest = args[1:]
+        tap = rest[-1:] == ["tap"]
+        if tap: rest = rest[:-1]
+        if not args or len(rest) not in (1, 2): sys.exit("usage: bench pick ID [QUESTION] ANSWER [tap]")
+        request["id"] = args[0]
+        if len(rest) == 2: request["question"] = rest[0]
+        request["answer"] = rest[-1]
+        if tap: request["tap"] = True
+    elif verb == "upload":
+        if len(args) < 3: sys.exit("usage: bench upload ID SELECTOR PATH…")
+        request["id"], request["selector"] = args[:2]
+        request["paths"] = [os.path.abspath(os.path.expanduser(p)) for p in args[2:]]
     elif verb == "type":
         if len(args) != 3: sys.exit("usage: bench type ID SELECTOR TEXT")
         request["id"], request["selector"], request["text"] = args

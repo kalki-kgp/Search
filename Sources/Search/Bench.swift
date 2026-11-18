@@ -84,7 +84,18 @@ final class Bench {
             var asked = query
             asked[kSecReturnAttributes as String] = true
             let status = SecItemCopyMatching(asked as CFDictionary, nil)
-            return status == errSecSuccess || status == errSecMissingEntitlement
+            // Reading says "not found" where writing says "missing
+            // entitlement" (a copy signed here, without a team): no mark
+            // could ever be found, so none is asked for.
+            return status == errSecSuccess || status == errSecMissingEntitlement || (status == errSecItemNotFound && !canKeep)
+        }
+
+        /// Whether this copy has a keychain access group to keep a mark in:
+        /// an application identifier from Search's provisioning profile.
+        private static var canKeep: Bool {
+            guard let task = SecTaskCreateFromSelf(nil) else { return false }
+            return SecTaskCopyValueForEntitlement(task, "com.apple.application-identifier" as CFString, nil) != nil
+                || SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil) != nil
         }
 
         static func grant() {
@@ -510,37 +521,14 @@ final class Bench {
             // events — trusted, as a hand's is — where `click` only runs
             // element.click() in the page, which a password manager, for one,
             // is right to ignore. `text=Sign in` picks a button or link by its
-            // words. Only on a SEARCH_PROBE run.
-            guard Store.testing else { answer(["error": "tap only works on a --test run — it would click in your page"]); return }
+            // words. The bench's own tabs only (find), or anything on a
+            // SEARCH_PROBE run: a bench tab is never the page you are using.
             guard let tab = find(request, in: browser), let selector = request["selector"] as? String else { answer(missing(request)); return }
             house(tab)
-            let view = tab.web
-            view.evaluateJavaScript(Bench.locate(selector), in: nil, in: Bench.world(for: selector)) { result in
-                MainActor.assumeIsolated {
-                    let value = try? result.get()
-                    guard let point = value as? [Double], point.count == 2, let window = view.window else {
-                        answer(["error": (value as? String) ?? "nothing matches \(selector)"])
-                        return
-                    }
-                    let local = NSPoint(x: point[0], y: view.isFlipped ? point[1] : view.bounds.height - point[1])
-                    let spot = view.convert(local, to: nil)
-                    // Held while clicking: "shift", "cmd", "opt".
-                    var held: NSEvent.ModifierFlags = []
-                    for name in request["mods"] as? [String] ?? [] {
-                        if name == "shift" { held.insert(.shift) }
-                        if name == "cmd" { held.insert(.command) }
-                        if name == "opt" { held.insert(.option) }
-                    }
-                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                        guard let event = NSEvent.mouseEvent(
-                            with: type, location: spot, modifierFlags: held,
-                            timestamp: ProcessInfo.processInfo.systemUptime,
-                            windowNumber: window.windowNumber, context: nil,
-                            eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
-                        ) else { continue }
-                        if type == .leftMouseDown { view.mouseDown(with: event) } else { view.mouseUp(with: event) }
-                    }
-                    answer(["ok": true, "at": point.map { Int($0) }])
+            snap(tab, selector) {
+                self.tap(tab, selector, mods: request["mods"] as? [String] ?? []) { error, point in
+                    if let error { answer(["error": error]); return }
+                    self.after(tab) { brief in answer(["ok": true, "at": point, "after": brief]) }
                 }
             }
 
@@ -551,34 +539,100 @@ final class Bench {
                 return
             }
             house(tab)
-            let text = request["text"] as? String ?? ""
-            tab.web.evaluateJavaScript(Bench.act(verb, selector: selector, text: text), in: nil, in: Bench.world(for: selector)) { result in
-                switch result {
-                case .success(let value):
-                    let said = (value as? String) ?? "?"
-                    guard said == "ok" else { answer(["error": said]); return }
-                    // And what it did, a moment later: where the page is,
-                    // what needs attention, what changed — the look an
-                    // agent would otherwise spend a call on.
-                    // A click that loads a page is let finish first, three
-                    // seconds at most, so what is said is about where it went.
-                    let web = tab.web
-                    @MainActor func settled(_ left: Int) {
-                        if web.isLoading, left > 0 {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled(left - 1) }
-                            return
-                        }
-                        guard let brief = Bench.outline(["mode": "brief", "last": self.looks[tab.id] ?? NSNull()]) else { answer(["ok": true]); return }
-                        web.evaluateJavaScript(brief, in: nil, in: Web.world) { [weak self] after in
-                            let got = (try? after.get()) as? [String: Any] ?? [:]
-                            if let look = got["look"] { self?.remember(look, for: tab) }
-                            answer(["ok": true, "after": got["text"] as? String ?? ""])
+            act(verb, tab, selector, text: request["text"] as? String ?? "", answer)
+
+        case "pick":
+            // A checkbox or radio by the question it answers and the words of
+            // its answer (Outline/outline.js, pick), then clicked — or tapped,
+            // for a page that ignores a script's click. One already chosen is
+            // left as it is: a second click would undo a checkbox.
+            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
+            guard let words = request["answer"] as? String, !words.isEmpty else { answer(["error": "pick needs the words of an answer"]); return }
+            house(tab)
+            var options: [String: Any] = ["mode": "pick", "answer": words]
+            if let asked = request["question"] as? String { options["question"] = asked }
+            guard let script = Bench.outline(options) else { answer(["error": "Outline/outline.js is missing from this build"]); return }
+            Bench.pastBlank(tab.web) { tab.web.evaluateJavaScript(script, in: nil, in: Web.world) { result in
+                let got = (try? result.get()) as? [String: Any] ?? [:]
+                guard got["text"] as? String == "ok", let at = got["at"] as? String else {
+                    answer(["error": got["text"] as? String ?? "nothing to pick"])
+                    return
+                }
+                let said = got["said"] as? String ?? at
+                if got["already"] as? Bool == true { answer(["ok": true, "after": "\(at) \(said): already chosen"]); return }
+                let told: ([String: Any]) -> Void = { reply in
+                    guard reply["error"] == nil else { answer(reply); return }
+                    var reply = reply
+                    reply["after"] = "\(at) \(said)\n" + (reply["after"] as? String ?? "")
+                    answer(reply)
+                }
+                if request["tap"] as? Bool == true {
+                    self.snap(tab, at) {
+                        self.tap(tab, at, mods: []) { error, point in
+                            if let error { told(["error": error]); return }
+                            self.after(tab) { brief in told(["ok": true, "after": brief]) }
                         }
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { settled(26) }
-                case .failure(let error): answer(["error": error.localizedDescription])
+                } else {
+                    self.act("click", tab, at, text: "", told)
+                }
+            } }
+
+        case "upload":
+            // Files for the chooser a button opens: the button is tapped, as a
+            // hand would, and the chooser it asks for is answered with these
+            // files instead of a panel (Dialogs: runOpenPanelWith). Files the
+            // command names, on this Mac, for the bench's own tabs only.
+            guard let tab = find(request, in: browser), let selector = request["selector"] as? String else { answer(missing(request)); return }
+            let paths = request["paths"] as? [String] ?? []
+            guard !paths.isEmpty else { answer(["error": "upload needs a file"]); return }
+            var files: [URL] = []
+            for path in paths {
+                var folder: ObjCBool = false
+                guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path, isDirectory: &folder), !folder.boolValue else {
+                    answer(["error": "no file at \(path)"])
+                    return
+                }
+                files.append(URL(fileURLWithPath: path).standardizedFileURL)
+            }
+            house(tab)
+            let key = ObjectIdentifier(tab.web)
+            Bench.files[key] = files
+            snap(tab, selector) {
+                // An <input type=file> the page keeps out of sight has nowhere
+                // to tap: it is clicked from the page, which WebKit lets open
+                // a chooser for a script that isn't the page's own.
+                self.tap(tab, selector, mods: []) { error, _ in
+                    if error != nil {
+                        tab.web.evaluateJavaScript(Bench.act("click", selector: selector, text: ""), in: nil, in: Bench.world(for: selector)) { _ in }
+                    }
+                    var left = 50
+                    @MainActor func chosen() {
+                        if Bench.files[key] == nil {
+                            self.after(tab) { brief in
+                                answer(["ok": true, "after": "chose " + files.map(\.lastPathComponent).joined(separator: ", ") + "\n" + brief])
+                            }
+                            return
+                        }
+                        left -= 1
+                        guard left > 0 else {
+                            Bench.files[key] = nil
+                            answer(["error": "no file chooser opened from \(selector)" + (error.map { " (\($0))" } ?? "") + ": aim at the button that opens it"])
+                            return
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { chosen() }
+                    }
+                    chosen()
                 }
             }
+
+        case "show":
+            // A bench tab brought to the front of its window, to be watched:
+            // asked for by name, so the window is taken over only when that
+            // is what is wanted. The bench's own tabs only.
+            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
+            browser.select(tab)
+            answer(describe(tab))
 
         case "towindow":
             // A tab to another window, as its menu's Move to Window does: to
@@ -2338,7 +2392,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "early", "watch", "until",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "early", "watch", "until", "tap", "pick", "upload", "show",
             ]])
         }
     }
@@ -3094,6 +3148,89 @@ final class Bench {
     /// Where an element's middle is, in the page's own points, scrolled
     /// into view first. A selector, or `text=…` for a button or link by its
     /// words.
+    /// Files `upload` has for the next chooser a bench tab's page opens,
+    /// by its view. Taken by Dialogs' runOpenPanelWith, once.
+    static var files: [ObjectIdentifier: [URL]] = [:]
+
+    /// The element's state and every button's, kept in Search's world as an
+    /// action starts, for brief to say what it changed.
+    private func snap(_ tab: Tab, _ selector: String, then go: @escaping @MainActor () -> Void) {
+        guard let script = Bench.outline(["mode": "snap", "selector": selector]) else { go(); return }
+        tab.web.evaluateJavaScript(script, in: nil, in: Web.world) { _ in MainActor.assumeIsolated { go() } }
+    }
+
+    /// click, type or submit by script, then what it did.
+    private func act(_ verb: String, _ tab: Tab, _ selector: String, text: String, _ answer: @escaping ([String: Any]) -> Void) {
+        snap(tab, selector) {
+            tab.web.evaluateJavaScript(Bench.act(verb, selector: selector, text: text), in: nil, in: Bench.world(for: selector)) { result in
+                switch result {
+                case .success(let value):
+                    let said = (value as? String) ?? "?"
+                    guard said == "ok" else { answer(["error": said]); return }
+                    self.after(tab) { brief in answer(["ok": true, "after": brief]) }
+                case .failure(let error): answer(["error": error.localizedDescription])
+                }
+            }
+        }
+    }
+
+    /// What an action did, a moment later: where the page is, what needs
+    /// attention, what changed, and the effect on what was acted on — the
+    /// look an agent would otherwise spend a call on. A click that loads a
+    /// page is let finish first, three seconds at most, so what is said is
+    /// about where it went.
+    private func after(_ tab: Tab, _ done: @escaping (String) -> Void) {
+        let web = tab.web
+        @MainActor func settled(_ left: Int) {
+            if web.isLoading, left > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled(left - 1) }
+                return
+            }
+            guard let brief = Bench.outline(["mode": "brief", "last": self.looks[tab.id] ?? NSNull()]) else { done(""); return }
+            web.evaluateJavaScript(brief, in: nil, in: Web.world) { after in
+                let got = (try? after.get()) as? [String: Any] ?? [:]
+                if let look = got["look"] { self.remember(look, for: tab) }
+                done(got["text"] as? String ?? "")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { settled(26) }
+    }
+
+    /// Mouse down and up at the middle of the element, as the view gets
+    /// them from a hand.
+    private func tap(_ tab: Tab, _ selector: String, mods: [String], _ done: @escaping @MainActor (String?, [Int]) -> Void) {
+        let view = tab.web
+        view.evaluateJavaScript(Bench.locate(selector), in: nil, in: Bench.world(for: selector)) { result in
+            MainActor.assumeIsolated {
+                let value = try? result.get()
+                guard let point = value as? [Double], point.count == 2 else {
+                    done((value as? String) ?? "nothing matches \(selector)", [])
+                    return
+                }
+                guard let window = view.window else { done("that tab has no window to click in", []); return }
+                let local = NSPoint(x: point[0], y: view.isFlipped ? point[1] : view.bounds.height - point[1])
+                let spot = view.convert(local, to: nil)
+                // Held while clicking: "shift", "cmd", "opt".
+                var held: NSEvent.ModifierFlags = []
+                for name in mods {
+                    if name == "shift" { held.insert(.shift) }
+                    if name == "cmd" { held.insert(.command) }
+                    if name == "opt" { held.insert(.option) }
+                }
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    guard let event = NSEvent.mouseEvent(
+                        with: type, location: spot, modifierFlags: held,
+                        timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
+                    ) else { continue }
+                    if type == .leftMouseDown { view.mouseDown(with: event) } else { view.mouseUp(with: event) }
+                }
+                done(nil, point.map { Int($0) })
+            }
+        }
+    }
+
     private static func locate(_ selector: String) -> String {
         let sel = (try? JSONSerialization.data(withJSONObject: [selector])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
         return """
@@ -3113,6 +3250,7 @@ final class Bench {
           if (!el) return null;
           el.scrollIntoView({ block: 'center', inline: 'nearest' });
           var r = el.getBoundingClientRect();
+          if (r.width < 1 || r.height < 1) return 'no box to tap: ' + s + ' takes no room on the page';
           return [r.left + r.width / 2, r.top + r.height / 2];
         })()
         """
