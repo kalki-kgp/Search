@@ -11,6 +11,7 @@ import WebKit
 // switch for HTTP/3 of its own, and the one CFNetwork reads works only for
 // the whole Mac (`defaults write -g CFNetworkHTTP3Override`), Safari and Mail
 // included — not ours to flip.
+// Reported to Apple as FB25647873 (2026-11-20); once it's fixed, this can go.
 //
 // What WebKit does have is a proxy per store, for some domains only. Through
 // a proxy a connection is TCP and so HTTP/2. This is that proxy: a tunnel on
