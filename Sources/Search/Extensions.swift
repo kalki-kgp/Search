@@ -131,6 +131,7 @@ final class Extensions: NSObject, ObservableObject {
         // extension's pages keep what they store where the browser does —
         // and a test run's apart from the real one's.
         views.websiteDataStore = Store.websites
+        MainActor.assumeIsolated { Relay.fit(Store.websites) }
         // The same user agent as the web tabs, to the letter. WebKit gives
         // workers the user agent of the last page that loaded and, when it
         // differs, stops the running workers to apply it — and extension
