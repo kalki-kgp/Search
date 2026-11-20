@@ -12,6 +12,7 @@ in [ROADMAP.md](ROADMAP.md).
 ## Unreleased
 
 ### Added
+- Sync with iCloud, off unless you turn it on in Settings › General › Your browser: your open tabs, pins, spaces, bookmarks and a few settings, with Search on your iPhone (in beta on TestFlight) and your other Macs. Through your own iCloud, end to end encrypted; private tabs, history, passwords, cookies and sign-ins never go, and nothing leaves the Mac until you turn it on. Another Mac's open tabs show under History and in the address field.
 
 - A tab pulled down out of the top row comes off it: a small pill with its title follows the hand, and letting go opens it in a window of its own right there, on whichever screen that is, or puts it in the Search window it was let go over. Brought back to the row before letting go, it stays. As in Chrome and Safari; a pin, or the only tab of the only window, stays where it is
 - Tabs reload far less. A tab no longer sleeps after half an hour unseen, only when the Mac is short of memory: when it starts writing memory out to the disk, or has less than a sixth left, as well as on macOS's own warning, which never came on a 16 GB Mac that reached 8 GB of swap. The tab that goes first is the one holding the most for being the least missed, learned from how long you usually stay away from that tab and that site; time with the lid shut doesn't count as time away. With room to spare, only a tab left for six times its usual absence, and at least an hour, goes
