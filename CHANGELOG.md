@@ -40,6 +40,7 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Fixed
 
+- Big uploads to Google go through: a video to Drive, a document to Play Console. Apple's HTTP/3 sends the first 4 MB to Google and then stalls until the upload fails, which never happened in Brave, whose networking is Chrome's. Google's sites now go over HTTP/2 through a relay inside Search that only joins the two ends; YouTube's video streams and every other site are left as they were
 - The ad blocker leaves a site's own requests alone, as Brave does by default: its lists block what a page loads from other sites, not the site's calls to itself, unless a rule says first-party or the list is one Brave applies everywhere. Blocking them all is Brave's Aggressive mode, and it stalled Google Play Console's document check, which spun on "Running a quick check" and never finished while the same upload went through in Brave. Lists compiled before are redone at the next launch
 - A tab you reached from a search sleeps again. YouTube's search box still holds your words on the video you opened from the results, and Search took them for something typed and not sent, so a video tab never gave its memory back: two of them held about a gigabyte each for a day. A one-line box's words now count as sent once Return is pressed, the page has moved on, or the words are in its address; a half-written message still keeps its tab awake
 - A tab playing aloud is never put to sleep when WebKit's own flag says it is quiet: its page's media is asked as well, just before

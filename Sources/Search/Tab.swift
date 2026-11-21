@@ -89,6 +89,8 @@ enum Web {
         // Web notifications go through the store (see Notifications.swift);
         // a private tab's is left without, and a page there is refused.
         if !shy { let kept = config.websiteDataStore; MainActor.assumeIsolated { SiteNotifications.shared.attach(kept) } }
+        // Google's uploads over HTTP/2 (see Relay.swift).
+        let fitted = config.websiteDataStore; MainActor.assumeIsolated { Relay.fit(fitted) }
         config.processPool = Web.pool
         // A test run's pretend camera and microphone (see ExtensionCapture).
         if #available(macOS 15.4, *), Store.testing { ExtensionCapture.mockDevices(config.preferences) }
