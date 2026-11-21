@@ -3762,7 +3762,7 @@ final class Browser: NSObject, ObservableObject {
 
     /// As exportPDF(_:to:finished:), for Save Page As….
     func savePage(_ tab: Tab, to file: URL, finished: ((Bool) -> Void)? = nil) {
-        guard tab.isWeb else {
+        guard !tab.isBlank else {
             finished?(false)
             return
         }
