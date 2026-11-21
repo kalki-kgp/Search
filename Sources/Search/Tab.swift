@@ -1466,7 +1466,17 @@ final class Tab: ObservableObject, Identifiable {
     /// take — no error, no navigation, just a view that goes on sitting on
     /// about:blank with nothing left to say so. Still there, or still
     /// answering for a process that's already gone, is asked once more.
-    private func loadAndVerify(_ url: URL, state: Any? = nil, tries: Int = 0) {
+    /// Which load is the latest: a wait for a window left over from an
+    /// earlier one must not load over it.
+    private var loadGeneration: UInt64 = 0
+
+    private func loadAndVerify(_ url: URL, state: Any? = nil) {
+        loadGeneration &+= 1
+        continueLoadAndVerify(url, state: state, view: web, token: loadGeneration, waited: false)
+    }
+
+    private func continueLoadAndVerify(_ url: URL, state: Any?, view: PageView, token: UInt64, waited: Bool) {
+        guard loadGeneration == token, built === view else { return }
         // Wait for the stage to take the view back before loading into it. A
         // page loaded while its view is off any window boots as a hidden tab,
         // and a site that holds everything until it is shown — x.com does,
@@ -1477,10 +1487,15 @@ final class Tab: ObservableObject, Identifiable {
         // SwiftUI actually putting the view on screen. Bounded at about a
         // second, so a wake with no stage waiting for it still loads rather
         // than hanging on one that will never come.
-        let view = web
-        if view.window == nil, tries < 50 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-                self?.loadAndVerify(url, state: state, tries: tries + 1)
+        //
+        // The view says when it has a window (PageView.whenInWindow) rather
+        // than being asked every 20 ms: asked, a tab woken by ⌘1–⌘9 started
+        // loading up to a timer's tick after the stage was ready for it, and
+        // a tick that a busy main thread put off made it later.
+        if view.window == nil, !waited {
+            view.whenInWindow(within: 1) { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.continueLoadAndVerify(url, state: state, view: view, token: token, waited: true)
             }
             return
         }
@@ -1860,6 +1875,43 @@ final class MiddleRelay: NSObject, WKScriptMessageHandler {
 
 /// A web view that reads the two-finger swipe for itself.
 final class PageView: WKWebView {
+    // MARK: - waiting for a window (upstream #1074)
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, onWindow != nil else { return }
+        // Not in this very step: the stage puts the view in its window and
+        // only then gives it its size, and a page asked to load before that
+        // starts out laid out at no size.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil else { return }
+            self.arrived()
+        }
+    }
+
+    /// What is to be done once the view is in a window, and which wait that
+    /// is: a timer left over from an earlier wait is no bound for this one.
+    private var onWindow: (() -> Void)?
+    private var waits: UInt64 = 0
+
+    /// `then`, once this view is in a window, or after `limit` seconds with
+    /// none — a view nobody is going to show still has to load.
+    func whenInWindow(within limit: TimeInterval, _ then: @escaping () -> Void) {
+        waits &+= 1
+        let wait = waits
+        onWindow = then
+        DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak self] in
+            guard let self, self.waits == wait else { return }
+            self.arrived()
+        }
+    }
+
+    private func arrived() {
+        guard let then = onWindow else { return }
+        onWindow = nil
+        then()
+    }
+
     /// The page's own right-click menu. WebKit puts extensions' items for the
     /// page in it itself; Search adding them again showed each one twice.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
