@@ -313,6 +313,12 @@ final class Preferences: ObservableObject {
     @Published var listsPins: Bool {
         didSet { store.set(listsPins, forKey: "pins.list") }
     }
+    /// A pin goes back to the page it was pinned at when it is closed with
+    /// ⌘W and when Search opens again, as Arc's pins do, rather than keeping
+    /// wherever it was taken since. Off unless asked for.
+    @Published var pinsGoHome: Bool {
+        didSet { store.set(pinsGoHome, forKey: "pins.home") }
+    }
     /// Whether the pinned rows are drawn as rows: asked for, and with the
     /// tabs down the side. Across the top every pin is a square.
     var showsPinRows: Bool { listsPins && sidebar }
@@ -370,6 +376,7 @@ final class Preferences: ObservableObject {
         keepsSignIns = keeps
         // Before the first page is loaded into the store.
         Store.keepsSignIns = keeps
+        Spaces.everyStore.forEach(Store.followCookies)
         extensionsInPrivate = store.bool(forKey: "extensions.private")
         // Offered by default only in a build that can actually do them —
         // one with Apple's browser entitlement and its profile embedded. A
@@ -409,6 +416,7 @@ final class Preferences: ObservableObject {
         usesSpaces = store.bool(forKey: "spaces")
         usesTabGroups = store.bool(forKey: "tabs.groups")
         listsPins = store.bool(forKey: "pins.list")
+        pinsGoHome = store.bool(forKey: "pins.home")
         splitView = store.bool(forKey: "splitView")
         commandBar = store.bool(forKey: "commandbar")
         let history = store.bool(forKey: "swipe.history")

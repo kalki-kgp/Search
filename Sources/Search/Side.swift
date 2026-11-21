@@ -36,7 +36,9 @@ struct SideBar: View {
 
     /// The window's buttons' corner: gone in full screen, where macOS takes
     /// them away, and back, forward and reload move up to the edge (idea 184).
-    private var lights: CGFloat { browser.fullScreen ? 0 : Metrics.sideLights }
+    private var lights: CGFloat {
+        browser.fullScreen ? 0 : max(0, min(Metrics.sideLights, prefs.sideWidth - 20 - Metrics.helmDoors))
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -173,7 +175,12 @@ struct SideBar: View {
         }
         // The pages are the column's whole width, each with its own margin.
         .padding(.horizontal, -10)
-        .frame(maxHeight: .infinity, alignment: .top)
+        // The room there is, and never more: another space's rows, drawn
+        // whole while they pass, run on past the foot rather than making the
+        // column taller than the window. With no minimum, a long space coming
+        // in made it so, and the column, centred, lost its top and its foot
+        // until the swipe was done (#1024).
+        .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
     }
 
     /// One space's page: the rows on screen, another space's rows as they
@@ -222,8 +229,15 @@ struct SideBar: View {
                                 let representative = browser.activeSplit?.left ?? id
                                 withAnimation(Motion.glide) { proxy.scrollTo(representative) }
                             }
+                            // A turn of the run loop later, as the row across
+                            // the top does it (TabBar.reveal): the folded
+                            // column comes out mid-animation, and asked at
+                            // once, before the rows had their height, the
+                            // scroll could be dropped and the tab you were on
+                            // left out of sight.
                             .onAppear {
-                                if let id = browser.activeID {
+                                guard let id = browser.activeID else { return }
+                                DispatchQueue.main.async {
                                     proxy.scrollTo(browser.activeSplit?.left ?? id, anchor: .center)
                                 }
                             }
@@ -518,18 +532,44 @@ struct SideBar: View {
 
     /// One small door at the bottom: the settings.
     private var foot: some View {
+        SideFoot(browser: browser, prefs: prefs, fetches: browser.fetches)
+    }
+
+}
+
+/// The row at the bottom of the column. Never wider than the column: wider,
+/// the column took its width, and centred in its own frame it slid half the
+/// overflow off each side (#535). The space's door, the puzzle, bookmarks and
+/// downloads stay put; the pinned extensions that don't fit give way, from
+/// the last, and are still in the puzzle's list.
+private struct SideFoot: View {
+    @ObservedObject var browser: Browser
+    @ObservedObject var prefs: Preferences
+    @ObservedObject var fetches: Fetches
+
+    var body: some View {
         HStack(spacing: 2) {
-            if browser.prefs.usesSpaces { SpaceDot(browser: browser) }
-            ExtensionSlot(edge: .trailing)
+            if prefs.usesSpaces { SpaceDot(browser: browser) }
+            ExtensionSlot(edge: .trailing, room: room)
             BookmarkDoor(browser: browser, arrowEdge: .trailing)
             // Only while a download is running, and a moment after.
-            FetchDoor(browser: browser, fetches: browser.fetches)
+            FetchDoor(browser: browser, fetches: fetches)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 10)
     }
 
+    /// How many pinned extensions fit beside the doors that stay. Every door
+    /// is 26 points, with 2 between them.
+    private var room: Int {
+        let door: CGFloat = 26 + 2
+        var kept = 2  // the puzzle and bookmarks
+        if prefs.usesSpaces { kept += 1 }
+        if FetchDoor.shows(fetches, prefs) { kept += 1 }
+        let free = prefs.sideWidth - 2 * 10 + 2 - CGFloat(kept) * door
+        return max(0, Int((free / door).rounded(.down)))
+    }
 }
 
 /// The pinned squares' grid, every cell laid out at once. A lazy grid makes

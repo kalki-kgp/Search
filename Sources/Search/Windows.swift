@@ -173,7 +173,13 @@ enum Browsers {
             view.sizingOptions = [.minSize]
             host = view
         }
-        let size = popup ? NSSize(width: 480, height: 600) : front?.window?.frame.size ?? NSSize(width: 1180, height: 780)
+        // A new window from one in full screen: in full screen of its own,
+        // in a Space of its own, as Safari and Chrome do — sized as a window
+        // for when it leaves full screen, not as the screen.
+        let fullScreen = !popup && frame == nil && front?.window?.styleMask.contains(.fullScreen) == true
+        let size = popup ? NSSize(width: 480, height: 600)
+            : fullScreen ? NSSize(width: 1180, height: 780)
+            : front?.window?.frame.size ?? NSSize(width: 1180, height: 780)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -192,7 +198,7 @@ enum Browsers {
         }
         if let frame {
             window.setFrame(frame, display: false)
-        } else if popup {
+        } else if popup || fullScreen {
             window.center()
         } else if let beside = front?.window {
             // Down and to the right of the window in front, as new windows go.
@@ -207,6 +213,8 @@ enum Browsers {
         register(browser)
         Bench.keepOff(window)
         window.makeKeyAndOrderFront(nil)
+        // Never in a test run: full screen would put a probe's window on a screen.
+        if fullScreen, !Store.testing { window.toggleFullScreen(nil) }
         comeForward()
     }
 
@@ -374,24 +382,6 @@ enum Browsers {
                 }
             })
         }
-        // Movable between presses, for macOS's Move & Resize and tiling;
-        // not during one, so that a tab picked up in the strip — the title
-        // bar — moves itself and not the window (see DragStrip, which moves
-        // the window itself). The flag is set before the window sees the
-        // press, which is when AppKit decides.
-        if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp], handler: { event in
-            MainActor.assumeIsolated {
-                if let window = event.window, browser(for: window) != nil {
-                    window.isMovable = event.type == .leftMouseUp
-                }
-            }
-            return event
-        }) { watching.append(monitor) }
-        // A press whose release something else kept — a menu popped up from
-        // it tracks the mouse itself — leaves no window unmovable for long.
-        watching.append(NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { for browser in all { browser.window?.isMovable = true } }
-        })
         watching.append(NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
             MainActor.assumeIsolated {
                 guard let window = note.object as? NSWindow else { return }

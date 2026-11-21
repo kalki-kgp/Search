@@ -147,6 +147,9 @@ struct SettingsPanel: View {
                 }
                 .padding(.bottom, 4)
             }
+            // A page of its own opens at its top. One scroll view kept for
+            // them all opened Tabs as far down as General had been read.
+            .id(page)
         }
         .padding(.horizontal, 22)
         .padding(.top, 18)
@@ -345,6 +348,10 @@ struct SettingsPanel: View {
                 Switch(on: $prefs.usesTabGroups)
             }
             Rule()
+            Line("Pins go back home", "As in Arc: a pinned tab closed with ⌘W, or left open when Search quits, comes back at the page it was pinned at rather than wherever you went from there.") {
+                Switch(on: $prefs.pinsGoHome)
+            }
+            Rule()
             Line("Split View", "Show two tabs side by side. Drag a tab onto a page to pair them.") {
                 Switch(on: $prefs.splitView)
             }
@@ -533,7 +540,7 @@ struct SettingsPanel: View {
                 Rule()
                 Shortcut("⇧⌘V", "Paste and go")
                 Rule()
-                Shortcut("⇧⌘C", "Copy address")
+                Shortcut("⇧⌘C  ⌥⇧⌘C", "Copy address, a clean link")
                 Rule()
                 Shortcut("⌃⇥  ⌘1–9", "Next tab, a tab by its place")
                 Rule()

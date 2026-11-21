@@ -34,7 +34,8 @@ struct KeyCombo: Codable, Hashable {
     init?(event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let named = KeyCombo.names[event.keyCode] ?? ContentView.digits[event.keyCode].map(String.init)
-        guard let key = named ?? event.characters(byApplyingModifiers: [])?.lowercased(), !key.isEmpty else { return nil }
+        let key = named ?? event.shortcutKey
+        guard !key.isEmpty else { return nil }
         self.init(key, command: flags.contains(.command), shift: flags.contains(.shift),
                   option: flags.contains(.option), control: flags.contains(.control))
     }
@@ -151,16 +152,24 @@ struct Command: Identifiable {
         Command("file.reopen", "Reopen Closed Tab", .file, KeyCombo("t", shift: true)) { $0.reopen() },
         Command("file.openAddress", "Open Address…", .file, KeyCombo("l")) { $0.edit() },
         Command("file.closeTab", "Close Tab", .file, KeyCombo("w")) { $0.closeFront() },
+        Command("file.closeWindow", "Close Window", .file, KeyCombo("w", shift: true)) { $0.closeWindow() },
         Command("file.import", "Bring Things Over…", .file, nil) { $0.bringingIn = "" },
         Command("file.share", "Share…", .file, nil) { $0.share() },
+        Command("file.savePage", "Save Page As…", .file, nil) { $0.savePage() },
+        Command("file.exportPDF", "Export as PDF…", .file, nil) { $0.exportPDF() },
         Command("file.print", "Print…", .file, KeyCombo("p")) { $0.printPage() },
 
         Command("edit.find", "Find on Page…", .edit, KeyCombo("f")) { $0.openFind() },
         Command("edit.findNext", "Find Next", .edit, KeyCombo("g")) { $0.look(forward: true) },
         Command("edit.findPrevious", "Find Previous", .edit, KeyCombo("g", shift: true)) { $0.look(forward: false) },
+        Command("edit.copyCleanLink", "Copy Clean Link", .edit, KeyCombo("c", shift: true, option: true)) { $0.copyCleanLink() },
 
         Command("view.sidebar", "Show Tabs in Sidebar", .view, KeyCombo("s", shift: true)) { $0.toggleSidebar() },
         Command("view.fold", "Hide Sidebar or Tab Bar", .view, KeyCombo("s")) { $0.toggleFold() },
+        // Every tab group of the space at once, as Arc's folders (⌥⌘[ and ⌥⌘],
+        // beside ⌘[ and ⌘], which go back and forward).
+        Command("view.foldGroups", "Fold All Groups", .view, KeyCombo("[", option: true)) { $0.foldAllGroups(true) },
+        Command("view.unfoldGroups", "Unfold All Groups", .view, KeyCombo("]", option: true)) { $0.foldAllGroups(false) },
         Command("view.reload", "Reload Page", .view, KeyCombo("r")) { $0.reload() },
         Command("view.reloadOrigin", "Reload Page From Origin", .view, KeyCombo("r", option: true)) { $0.reload(fromOrigin: true) },
         Command("view.reader", "Reading Mode", .view, KeyCombo("r", shift: true)) { $0.toggleReader() },

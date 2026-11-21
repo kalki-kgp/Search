@@ -247,8 +247,7 @@ final class DownloadLifecycleTests: XCTestCase {
         try await waitUntil { tab.committed == fixture.url("/page") && !tab.loading }
         try await waitUntil { fixture.completed("/page") == 1 }
 
-        let download = try await requestDownload("/private.bin", from: tab.web)
-        browser.keep(download, from: tab.web)
+        _ = try await requestDownload("/private.bin", from: tab.web)
         XCTAssertTrue(browser.fetches.entries.isEmpty)
 
         try await waitUntil {
@@ -258,6 +257,35 @@ final class DownloadLifecycleTests: XCTestCase {
         XCTAssertTrue(browser.loot.kept.isEmpty)
         XCTAssertFalse(browser.history.everything(matching: "127.0.0.1").contains { $0.url == fixture.url("/page") })
         XCTAssertTrue(fixture.cookies("/private.bin").contains { $0?.contains("download-session=fixture-cookie") == true })
+    }
+
+    func testPDFSavedFromPrivatePageIsAnnouncedButNeverListed() async throws {
+        let address = URL(string: "https://example.test/paper.pdf")
+        let pdf = Data("%PDF".utf8)
+
+        // The list is what these two stay out of, so an ordinary tab must still reach it.
+        let ordinary = try await openFixturePage()
+        browser.webView(ordinary.web, saveDataToFile: pdf, suggestedFilename: "kept.pdf",
+                        mimeType: "application/pdf", originatingURL: address)
+        XCTAssertEqual(browser.loot.kept.map(\.name), ["kept.pdf"])
+        browser.loot.forgetAll()
+
+        let shy = browser.open(URL(string: "about:blank")!, foreground: true, from: Tab(shy: true))
+        browser.webView(shy.web, saveDataToFile: pdf, suggestedFilename: "shy.pdf",
+                        mimeType: "application/pdf", originatingURL: address)
+        XCTAssertEqual(browser.announcement, "Saved shy.pdf")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: downloadFolder.appendingPathComponent("shy.pdf").path))
+        XCTAssertTrue(browser.loot.kept.isEmpty, "a private tab's PDF left its name and host in downloads.json")
+        browser.close(shy)
+        browser.loot.forgetAll()
+
+        // A page in a store that isn't kept, though no private tab holds it.
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        browser.webView(WKWebView(frame: .zero, configuration: configuration), saveDataToFile: pdf,
+                        suggestedFilename: "unkept.pdf", mimeType: "application/pdf", originatingURL: address)
+        XCTAssertEqual(browser.announcement, "Saved unkept.pdf")
+        XCTAssertTrue(browser.loot.kept.isEmpty, "a PDF from a store that isn't kept was listed")
     }
 
     private func openFixturePage() async throws -> BrowserTab {
@@ -272,7 +300,6 @@ final class DownloadLifecycleTests: XCTestCase {
 
     private func startDownload(_ path: String, in tab: BrowserTab) async throws -> FetchEntry {
         let download = try await requestDownload(path, from: tab.web)
-        browser.keep(download, from: tab.web)
         return try XCTUnwrap(browser.fetches.entry(for: download))
     }
 
@@ -280,6 +307,10 @@ final class DownloadLifecycleTests: XCTestCase {
         let request = URLRequest(url: fixture.url(path))
         return await withCheckedContinuation { continuation in
             webView.startDownload(using: request) { download in
+                // WebKit requires the delegate before this callback returns.
+                // Attaching after await leaves a scheduling gap in which the
+                // destination or failure callback can be lost on a cold runner.
+                self.browser.keep(download, from: webView)
                 continuation.resume(returning: download)
             }
         }
@@ -321,8 +352,10 @@ final class DownloadLifecycleTests: XCTestCase {
         throw WaitError.timedOut
     }
 
+    // Hosted runners initialize WebKit services from a clean image.
+    // Preserve the state assertions with a larger bounded CI deadline.
     private func waitUntil(
-        timeout: TimeInterval = 15,
+        timeout: TimeInterval = ProcessInfo.processInfo.environment["CI"] == "true" ? 60 : 15,
         file: StaticString = #filePath,
         line: UInt = #line,
         _ condition: @MainActor () -> Bool
@@ -333,7 +366,8 @@ final class DownloadLifecycleTests: XCTestCase {
             if condition() { return }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        XCTFail("Timed out waiting for the download state", file: file, line: line)
+        let entries = browser.fetches.entries.map { "\($0.name): \($0.state), \($0.completedBytes) bytes" }
+        XCTFail("Timed out waiting for the download state; entries: \(entries); completed: \(browser.loot.kept.map(\.name))", file: file, line: line)
         throw WaitError.timedOut
     }
 

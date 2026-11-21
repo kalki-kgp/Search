@@ -72,7 +72,13 @@ enum Web {
     /// starting, the window stuck meanwhile. Sharing one lets WebKit have
     /// the next process ready: 9 to 10 ms, for the same memory and the same
     /// number of processes (measured with ./bench bookmark URL new, 24 Sep 2026).
-    static let pool = WKProcessPool()
+    /// It also carries Search's geolocation provider (see SiteLocation),
+    /// which asks macOS nothing until a page you allowed wants a position.
+    static let pool: WKProcessPool = {
+        let pool = WKProcessPool()
+        SiteLocation.provide(pool)
+        return pool
+    }()
 
     /// `space`: the space the tab belongs to, when it is not the one on
     /// screen — a parked row made ahead of time (see Spaces.swift).
@@ -570,6 +576,9 @@ final class Tab: ObservableObject, Identifiable {
     /// The middle button was let go over a link. The browser opens it in a
     /// tab of its own beside this one, without leaving the page you are on.
     var onMiddleClick: ((Tab, URL) -> Void)?
+    /// A page on this Mac's link to another file, clicked: here, or in a
+    /// tab of its own for target="_blank" (see MiddleRelay).
+    var onFileLink: ((Tab, URL, Bool) -> Void)?
     /// Sent where this tab's view can't go: from an extension's page to the
     /// web or another extension, or from the web to an extension's page.
     /// WebKit keeps each kind of view to its own pages, so the tab has to be
@@ -772,9 +781,9 @@ final class Tab: ObservableObject, Identifiable {
                         if fresh == self.heldOver { return }
                         self.held = nil
                     }
-                    let freshHost = fresh.host()?.lowercased()
-                    let currentHost = self.address?.host()?.lowercased()
-                    let moved = freshHost != currentHost
+                    // By site, port included: localhost:3000 to localhost:5173
+                    // is another project, with another icon.
+                    let moved = Favicons.site(fresh) != self.address.flatMap(Favicons.site)
                     self.address = fresh
                     // Within the same origin — history.pushState, a fragment —
                     // the page on screen is the one at the new address.
@@ -907,6 +916,11 @@ final class Tab: ObservableObject, Identifiable {
         controller.addUserScript(
             WKUserScript(source: ScrollRelay.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Web.world)
         )
+        // At the start, so its pageshow runs ahead of the page's own
+        // (see KeptScroll.swift).
+        controller.addUserScript(
+            WKUserScript(source: KeptScroll.script, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: Web.world)
+        )
         controller.addUserScript(
             WKUserScript(source: Veiling.picker, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: Web.world)
         )
@@ -977,6 +991,13 @@ final class Tab: ObservableObject, Identifiable {
         controller.addUserScript(
             WKUserScript(source: LiveRate.script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)
         )
+        // Every frame, in the page's own world: a page an extension lists
+        // reaches it as chrome.runtime (see ExtensionExternal.swift).
+        if let external = ExtensionExternal.script {
+            controller.addUserScript(
+                WKUserScript(source: external, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)
+            )
+        }
         // Passkeys stand in the page's own world — they replace the page's
         // functions — and reach Search through a bridge in Search's, off or on:
         // an extension's page script can carry the patch either way (see
@@ -1155,7 +1176,13 @@ final class Tab: ObservableObject, Identifiable {
         picture = nil
         cover = nil
         adoptIcon()
-        web.open(url)
+        // Not before Shield's lists are in, at launch (see Shield.whenReady).
+        loadGeneration &+= 1
+        let token = loadGeneration
+        Shield.shared.whenReady { [weak self] in
+            guard let self, self.loadGeneration == token else { return }
+            self.web.open(url)
+        }
     }
 
     /// Brought back from the last session: everything the row needs to draw it,
@@ -1175,8 +1202,16 @@ final class Tab: ObservableObject, Identifiable {
     /// ⌘W on a pinned tab. The letter keeps its place in the row and the
     /// address is remembered; everything the page was holding is let go, so a
     /// pin you are not reading costs a line in a file and nothing else.
-    func rest() {
-        guard let url = address else { return }
+    /// Given `home`, it is put down there instead of where it was: Arc's pin
+    /// that goes back to its pinned page once closed (see Preferences.pinsGoHome).
+    func rest(at home: URL? = nil) {
+        guard let url = home ?? address else { return }
+        // The title was the page it is leaving; the host stands in until the
+        // pinned page is woken and names itself.
+        if let home, address != home {
+            address = home
+            title = home.host ?? ""
+        }
         pending = url
         memory = nil
         picture = nil
@@ -1437,7 +1472,21 @@ final class Tab: ObservableObject, Identifiable {
     /// take — no error, no navigation, just a view that goes on sitting on
     /// about:blank with nothing left to say so. Still there, or still
     /// answering for a process that's already gone, is asked once more.
-    private func loadAndVerify(_ url: URL, state: Any? = nil, tries: Int = 0) {
+    /// Which load is the latest: a wait for a window left over from an
+    /// earlier one must not load over it.
+    private var loadGeneration: UInt64 = 0
+
+    private func loadAndVerify(_ url: URL, state: Any? = nil) {
+        loadGeneration &+= 1
+        let token = loadGeneration, view = web
+        // Not before Shield's lists are in, at launch (see Shield.whenReady).
+        Shield.shared.whenReady { [weak self] in
+            self?.continueLoadAndVerify(url, state: state, view: view, token: token, waited: false)
+        }
+    }
+
+    private func continueLoadAndVerify(_ url: URL, state: Any?, view: PageView, token: UInt64, waited: Bool) {
+        guard loadGeneration == token, built === view else { return }
         // Wait for the stage to take the view back before loading into it. A
         // page loaded while its view is off any window boots as a hidden tab,
         // and a site that holds everything until it is shown — x.com does,
@@ -1448,10 +1497,15 @@ final class Tab: ObservableObject, Identifiable {
         // SwiftUI actually putting the view on screen. Bounded at about a
         // second, so a wake with no stage waiting for it still loads rather
         // than hanging on one that will never come.
-        let view = web
-        if view.window == nil, tries < 50 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-                self?.loadAndVerify(url, state: state, tries: tries + 1)
+        //
+        // The view says when it has a window (PageView.whenInWindow) rather
+        // than being asked every 20 ms: asked, a tab woken by ⌘1–⌘9 started
+        // loading up to a timer's tick after the stage was ready for it, and
+        // a tick that a busy main thread put off made it later.
+        if view.window == nil, !waited {
+            view.whenInWindow(within: 1) { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.continueLoadAndVerify(url, state: state, view: view, token: token, waited: true)
             }
             return
         }
@@ -1619,6 +1673,10 @@ final class Tab: ObservableObject, Identifiable {
     /// next time anyone asks for it.
     private func discard() {
         watch = []
+        // The page still loading goes with its view, and what said so goes
+        // first: its stopLoading below is heard by no one. Left set, a pin
+        // put down mid-load spun on its row for good.
+        if loading { loading = false }
         ears.stop()
         camera = .none
         microphone = .none
@@ -1635,6 +1693,9 @@ final class Tab: ObservableObject, Identifiable {
         web.searchName = nil
         web.onSearch = nil
         web.stopLoading()
+        // Detaching a view doesn't end capture while something still holds it.
+        web.setCameraCaptureState(.none, completionHandler: nil)
+        web.setMicrophoneCaptureState(.none, completionHandler: nil)
         web.navigationDelegate = nil
         web.uiDelegate = nil
         web.removeFromSuperview()
@@ -1741,6 +1802,33 @@ final class MiddleRelay: NSObject, WKScriptMessageHandler {
           if (!e.defaultPrevented) window.webkit.messageHandlers.officeMiddle.postMessage({ href: href });
         }, 0);
       }, true);
+      // A page on this Mac linking to another file. WebKit lets a file page
+      // read only its own folder, and drops a click on a link out of it
+      // before Search is asked: the page stayed where it was, and only the
+      // address typed in opened it. Search opens it the way it opens a typed
+      // one. A plain click the page hasn't claimed, to a file, not a jump
+      // within the page and not a download.
+      if (location.protocol === 'file:') window.addEventListener('click', function (e) {
+        if (e.button !== 0 || !e.isTrusted || e.defaultPrevented) return;
+        if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+        var a = anchor(e);
+        if (!a || a.hasAttribute('download')) return;
+        var target = (a.getAttribute('target') || '').toLowerCase();
+        if (['', '_self', '_top', '_parent', '_blank'].indexOf(target) < 0) return;
+        var href = a.href;
+        if (typeof href !== 'string' || href.indexOf('file:') !== 0) return;
+        if (href.split('#')[0] === location.href.split('#')[0]) return;
+        e.preventDefault();
+        window.webkit.messageHandlers.officeMiddle.postMessage({ file: href, blank: target === '_blank' });
+      }, false);
+      function anchor(e) {
+        var path = e.composedPath();
+        for (var i = 0; i < path.length; i++) {
+          var tag = path[i].tagName ? path[i].tagName.toLowerCase() : '';
+          if (tag === 'a' || tag === 'area') return path[i];
+        }
+        return null;
+      }
       function link(e) {
         // The path, not the parents: a link inside an open shadow root is
         // on it too. An <area> of an image map is a link, and so is an SVG
@@ -1766,6 +1854,21 @@ final class MiddleRelay: NSObject, WKScriptMessageHandler {
         _ controller: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
+        // A file page's link to another file (see watch): only from a file
+        // page's main frame, only to a file, which then gets the folder it
+        // would have had typed in, and no more (WKWebView.open).
+        if let body = message.body as? [String: Any], let file = body["file"] as? String {
+            guard message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.protocol == "file",
+                  let url = URL(string: file), url.isFileURL
+            else { return }
+            let blank = body["blank"] as? Bool ?? false
+            MainActor.assumeIsolated { [weak self] in
+                guard let self, let tab, tab.address?.isFileURL == true else { return }
+                tab.onFileLink?(tab, url, blank)
+            }
+            return
+        }
         guard let body = message.body as? [String: Any],
               message.frameInfo.isMainFrame,
               let href = body["href"] as? String,
@@ -1782,14 +1885,96 @@ final class MiddleRelay: NSObject, WKScriptMessageHandler {
 
 /// A web view that reads the two-finger swipe for itself.
 final class PageView: WKWebView {
+    // MARK: - waiting for a window (upstream #1074)
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, onWindow != nil else { return }
+        // Not in this very step: the stage puts the view in its window and
+        // only then gives it its size, and a page asked to load before that
+        // starts out laid out at no size.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil else { return }
+            self.arrived()
+        }
+    }
+
+    /// What is to be done once the view is in a window, and which wait that
+    /// is: a timer left over from an earlier wait is no bound for this one.
+    private var onWindow: (() -> Void)?
+    private var waits: UInt64 = 0
+
+    /// `then`, once this view is in a window, or after `limit` seconds with
+    /// none — a view nobody is going to show still has to load.
+    func whenInWindow(within limit: TimeInterval, _ then: @escaping () -> Void) {
+        waits &+= 1
+        let wait = waits
+        onWindow = then
+        DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak self] in
+            guard let self, self.waits == wait else { return }
+            self.arrived()
+        }
+    }
+
+    private func arrived() {
+        guard let then = onWindow else { return }
+        onWindow = nil
+        then()
+    }
+
     /// The page's own right-click menu. WebKit puts extensions' items for the
     /// page in it itself; Search adding them again showed each one twice.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
         // WebKit names it for a window, but a new window's page arrives here
-        // as a new tab (Browser's createWebViewWith), so it says so.
-        if let item = menu.items.first(where: { $0.identifier?.rawValue == "WKMenuItemIdentifierOpenLinkInNewWindow" }) {
+        // as a new tab (Browser's createWebViewWith), so it says so. The tab
+        // stays behind this one, as in Safari and Chrome, and as a ⌘-click's
+        // does; with ⌥ held the item becomes one that goes to it, WebKit's
+        // own, as it always was. Without a mouse's middle button, this is
+        // the way to a tab in the background that needs no key held.
+        if let index = menu.items.firstIndex(where: { $0.identifier?.rawValue == "WKMenuItemIdentifierOpenLinkInNewWindow" }) {
+            let item = menu.items[index]
+            if let front = item.copy() as? NSMenuItem {
+                front.title = "Open Link in New Tab and Go to It"
+                front.keyEquivalentModifierMask = .option
+                front.isAlternate = true
+                menu.insertItem(front, at: index + 1)
+            }
+            openLink = (item.target, item.action)
             item.title = "Open Link in New Tab"
+            item.keyEquivalentModifierMask = []
+            item.target = self
+            item.action = #selector(openLinkBehind(_:))
+        }
+        // Copy Clean Link (#594): under WebKit's Copy Link, the same link
+        // without its tracking parameters. On the page itself, under Reload,
+        // only when the page's own address has some, as Safari does.
+        if let index = menu.items.firstIndex(where: { $0.identifier?.rawValue == "WKMenuItemIdentifierCopyLink" }) {
+            let item = menu.items[index]
+            if let clean = item.copy() as? NSMenuItem {
+                copyLink = (item.target, item.action)
+                clean.title = "Copy Clean Link"
+                clean.identifier = NSUserInterfaceItemIdentifier("SearchCopyCleanLink")
+                clean.target = self
+                clean.action = #selector(copyCleanLink(_:))
+                menu.insertItem(clean, at: index + 1)
+            }
+        } else if let url, CleanLink.clean(url) != url,
+                  let index = menu.items.firstIndex(where: { $0.identifier?.rawValue == "WKMenuItemIdentifierReload" }) {
+            let clean = NSMenuItem(title: "Copy Clean Link", action: #selector(copyCleanPage(_:)), keyEquivalent: "")
+            clean.identifier = NSUserInterfaceItemIdentifier("SearchCopyCleanLink")
+            clean.target = self
+            clean.representedObject = url
+            menu.insertItem(clean, at: index + 1)
+        }
+        // The bench's linkmenu: the item it names is chosen as the menu
+        // comes up, the way a hand would choose it, and the menu goes.
+        if Store.testing, let title = PageView.picking {
+            PageView.picking = nil
+            RunLoop.main.perform(inModes: [.eventTracking, .default]) {
+                if let index = menu.items.firstIndex(where: { $0.title == title }) { menu.performActionForItem(at: index) }
+                menu.cancelTracking()
+            }
         }
         if let item = menu.items.first(where: { $0.identifier?.rawValue == "WKMenuItemIdentifierSearchWeb" }),
            let name = searchName?() {
@@ -1804,6 +1989,8 @@ final class PageView: WKWebView {
         }
     }
 
+    /// The item the bench's linkmenu will choose in the next menu.
+    static var picking: String?
     var searchName: (() -> String?)?
     var onSearch: ((String) -> Void)?
     private var selection: String?
@@ -1832,6 +2019,40 @@ final class PageView: WKWebView {
     })(document)
     """
     private var webSearch: (target: AnyObject?, action: Selector?) = (nil, nil)
+
+    /// WebKit's Open Link in New Window, handed on once the tab it makes is
+    /// marked to stay behind. WebKit asks for that tab a moment later, from
+    /// the page's process (Browser's createWebViewWith), so the mark lasts a
+    /// second and is used up by the first tab asked for.
+    private var openLink: (target: AnyObject?, action: Selector?) = (nil, nil)
+    private var behindSince: Date?
+
+    @objc private func openLinkBehind(_ item: NSMenuItem) {
+        guard let action = openLink.action else { return }
+        behindSince = Date()
+        NSApp.sendAction(action, to: openLink.target, from: item)
+    }
+
+    /// Whether the tab being made now is the menu's, to stay behind.
+    func takeBehind() -> Bool {
+        defer { behindSince = nil }
+        return behindSince.map { Date().timeIntervalSince($0) < 1 } ?? false
+    }
+
+    /// WebKit's Copy Link, for Copy Clean Link to clean what it copies.
+    private var copyLink: (target: AnyObject?, action: Selector?) = (nil, nil)
+
+    @objc private func copyCleanLink(_ item: NSMenuItem) {
+        guard let action = copyLink.action else { return }
+        let count = NSPasteboard.general.changeCount
+        NSApp.sendAction(action, to: copyLink.target, from: item)
+        CleanLink.rewrite(since: count)
+    }
+
+    @objc private func copyCleanPage(_ item: NSMenuItem) {
+        guard let url = item.representedObject as? URL else { return }
+        CleanLink.copy(url)
+    }
 
     @objc private func searchSelection(_ item: NSMenuItem) {
         defer { selection = nil }
@@ -2102,6 +2323,8 @@ final class PageView: WKWebView {
         // Only a live trackpad gesture — not its glide afterwards, and not a
         // mouse wheel, which has no beginning or end to speak of.
         guard event.momentumPhase == [] else { return }
+        // And only while the Mac says a swipe may go between pages.
+        guard Swipe.followsTheMac else { return }
 
         switch event.phase {
         case .mayBegin, .began:

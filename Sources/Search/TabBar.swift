@@ -109,6 +109,7 @@ struct TabBar: View {
                                                 topTab(tab, index: index, count: pins.count,
                                                        group: nil, strip: geo.size.width, each: each, grow: grow, circled: circled)
                                             }
+                                            if pinLine { PinLine() }
                                             ForEach(browser.tabGroups) { group in
                                                 GroupHeading(browser: browser, group: group,
                                                              horizontal: true, dragSpace: "strip")
@@ -124,7 +125,13 @@ struct TabBar: View {
                                                        group: nil, strip: geo.size.width, each: each, grow: grow, circled: circled)
                                             }
                                         } else {
+                                            // Drawn before the first tab that isn't a pin,
+                                            // rather than by splitting the run in two: the
+                                            // index and the count each tab is given are what
+                                            // carrying one along the row works from.
+                                            let firstLoose = browser.displayedTabs.firstIndex { $0.pin == nil }
                                             ForEach(Array(browser.displayedTabs.enumerated()), id: \.element.id) { index, tab in
+                                                if pinLine, index == firstLoose { PinLine() }
                                                 topTab(tab, index: index, count: browser.displayedTabs.count,
                                                        group: nil, strip: geo.size.width, each: each, grow: grow, circled: circled)
                                             }
@@ -275,8 +282,13 @@ struct TabBar: View {
                 : browser.parked[space.id] ?? Parked(tabs: [], active: nil)
             let shown = rowTabs(row.tabs, splits: row.splits)
             let each = width(in: strip, tabs: shown, splits: row.splits)
+            // The neighbour draws no group headings, so its line only ever
+            // stands between its pins and its own loose tabs.
+            let line = TabBar.showsPinLine(shown)
+            let firstLoose = shown.firstIndex { $0.pin == nil }
             HStack(spacing: Metrics.tabGap) {
-                ForEach(shown) { tab in
+                ForEach(Array(shown.enumerated()), id: \.element.id) { index, tab in
+                    if line, index == firstLoose { PinLine() }
                     rowItem(tab, in: row.tabs, splits: row.splits, activeID: row.active,
                             width: each, room: strip - lights - 12,
                             height: Metrics.strip, interactive: false, pill: pill)
@@ -394,6 +406,20 @@ struct TabBar: View {
         min(content(in: strip), room(in: strip))
     }
 
+    /// The line stands between the pins and the tabs that come and go, and
+    /// only with something on both sides of it: at either end of the run it
+    /// would be a line around nothing. A group heading counts as something,
+    /// since it shows even when its group holds no visible tab.
+    static func showsPinLine(_ tabs: [Tab], groups: Int = 0) -> Bool {
+        tabs.contains { $0.pin != nil } && (groups > 0 || tabs.contains { $0.pin == nil })
+    }
+
+    /// Whether this window's own run carries the line.
+    private var pinLine: Bool {
+        TabBar.showsPinLine(browser.displayedTabs,
+                            groups: browser.prefs.usesTabGroups ? browser.tabGroups.count : 0)
+    }
+
     private func overflowing(in strip: CGFloat) -> Bool {
         content(in: strip) > room(in: strip) + 0.5
     }
@@ -415,6 +441,7 @@ struct TabBar: View {
         let shown = Int(pinned + loose + headers)
         var total = pinned * Metrics.pinWidth + loose * each + extra
             + headingWidth + CGFloat(max(0, shown - 1)) * Metrics.tabGap
+            + (pinLine ? PinLine.space : 0)
         if let id = browser.editingTab, let tab = browser.tabs.first(where: { $0.id == id }) {
             let splitWidth = browser.prefs.splitView ? browser.split(for: tab).map { _ in splitItemWidth(base: each) } : nil
             let oldWidth = splitWidth ?? (tab.pin != nil ? Metrics.pinWidth : each)
@@ -456,6 +483,7 @@ struct TabBar: View {
             let spent = CGFloat(pins) * Metrics.pinWidth + extra
                 + browser.tabGroups.reduce(CGFloat.zero) { $0 + GroupHeading.width(for: $1.name) }
                 + CGFloat(max(0, pins + count + browser.tabGroups.count - 1)) * Metrics.tabGap
+                + (pinLine ? PinLine.space : 0)
             return max(Metrics.tabMinWidth, min(Metrics.tabWidth, (room(in: strip) - spent) / CGFloat(count)))
         }
         return width(in: strip, tabs: displayed, splits: browser.splits)
@@ -469,6 +497,7 @@ struct TabBar: View {
         let extra = pairWidthExtra(in: looseTabs, base: Metrics.tabMinWidth, splits: splits)
         let spent = pinned * Metrics.pinWidth
             + extra + CGFloat(max(0, tabs.count - 1)) * Metrics.tabGap
+            + (TabBar.showsPinLine(tabs) ? PinLine.space : 0)
         return max(Metrics.tabMinWidth, min(Metrics.tabWidth, (room(in: strip) - spent) / loose))
     }
 
@@ -588,6 +617,24 @@ struct TabBar: View {
     }
 }
 
+/// The line between what is kept and what comes and goes, standing up in the
+/// strip as the column's own lies across it (see KeepLine in Side.swift). The
+/// same hairline grey, as tall as a tab's mark, with the run's gap on either
+/// side of it.
+struct PinLine: View {
+    static let width: CGFloat = 1
+    /// What it takes out of the run: itself, and the gap the stack puts
+    /// before it. The widths have to count it, or every tab is laid out as
+    /// though the line weren't there and the run runs a line's width over.
+    static let space: CGFloat = PinLine.width + Metrics.tabGap
+
+    var body: some View {
+        Rectangle()
+            .fill(Palette.hairline)
+            .frame(width: PinLine.width, height: 20)
+    }
+}
+
 /// Back, forward, reload. They watch the live tab, not the window: whether
 /// there is anywhere to go back to is the tab's to say, and it changes with
 /// every page. Used here and, beside the traffic lights instead of at the
@@ -634,6 +681,16 @@ struct Helm: View {
                 }
                 .disabled(tab.isBlank)
                 .opacity(tab.isBlank ? 0.3 : 1)
+                // The menu's second item is the reason for it: ⌥⌘R has no
+                // button. Nothing to offer while the door is Stop.
+                .contextMenu {
+                    if !tab.loading && !tab.isBlank {
+                        Button("Reload Page") { browser.reload() }
+                            .shortcut("view.reload")
+                        Button("Reload Page From Origin") { browser.reload(fromOrigin: true) }
+                            .shortcut("view.reloadOrigin")
+                    }
+                }
             }
             .animation(Motion.quick, value: back)
             .animation(Motion.quick, value: forward)
@@ -977,10 +1034,14 @@ private struct TabPill: View {
         } else if hovering {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Palette.hover)
-        } else if pinned {
+        } else if pinned || compact {
             // A letter with nothing behind it reads as debris. A pinned tab
             // keeps a faint ground of its own so the block of them reads as
-            // one thing.
+            // one thing, and a tab down to its mark stands in the same place:
+            // the title that said it was a tab is gone, and the same faint
+            // grey says it for the mark. The live, selected and hovered
+            // grounds above are unchanged, so a mark wears this one only
+            // while it is none of those.
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Palette.wash.opacity(0.55))
         }
@@ -1150,6 +1211,11 @@ struct TabAddressField: NSViewRepresentable {
         field.textColor = Palette.NS.ink
         field.cell?.usesSingleLineMode = true
         field.cell?.wraps = false
+        // Without this the field editor stays as wide as the field: the text
+        // past the edge is cut off, and the caret, Home/End and a click can't
+        // reach it. Scrollable, the editor grows to the text and follows the caret.
+        field.cell?.isScrollable = true
+        field.lineBreakMode = .byClipping
         field.stringValue = browser.tabDraft
         context.coordinator.watch(field)
         // The site card stands under whichever field the address is in.
@@ -1354,6 +1420,12 @@ struct TabMenu: View {
                 Button("Change Letter") { browser.editLetter(tab) }
             }
             Button("Unpin") { browser.unpin(tab) }
+            // Away for good in one go, where Unpin, finding the row and its
+            // × took three (#834); ⇧⌘T brings it back as a tab.
+            Button("Delete") {
+                browser.unpin(tab)
+                browser.close(tab)
+            }
         }
         if browser.prefs.usesSpaces, !tab.bench,
            tab.address.flatMap({ Browser.extensionHost(of: $0) }) == nil {
@@ -1432,6 +1504,11 @@ struct TabMenu: View {
         Button("Copy as Markdown Link") {
             browser.select(tab)
             browser.copyMarkdownLink()
+        }
+        .disabled(tab.isBlank)
+        Button("Copy Clean Link") {
+            browser.select(tab)
+            browser.copyCleanLink()
         }
         .disabled(tab.isBlank)
         Button(tab.muted ? "Unmute Tab" : "Mute Tab") { tab.toggleMute() }

@@ -117,11 +117,15 @@ enum Metrics {
     static let helm: CGFloat = 3 * 26 + 2 * 2 + 8
     /// The same three doors again, in the sidebar, where they sit right of
     /// the lights instead. The column already has 10 of horizontal padding
-    /// of its own before this even starts, so this is the lights' own edge
-    /// (79) less that padding, plus a sliver of air — not the full breathing
-    /// room a tab row gets, because the sidebar's minimum width doesn't have
-    /// it to give.
-    static let sideLights: CGFloat = 72
+    /// of its own before this even starts. 72 put the back door's box 3
+    /// points from the zoom button and its chevron 12, "a little tight"
+    /// (feedback, 22 Oct 2026): at 80 the chevron is 20 points clear of the
+    /// lights, about the 19 the window leaves on their left, as a toolbar's
+    /// first item sits in Safari. A column too narrow for that gives back
+    /// what it must (SideBar.lights), down to where it was.
+    static let sideLights: CGFloat = 80
+    /// The three doors' own width, without the air after them.
+    static let helmDoors: CGFloat = 3 * 26 + 2 * 4
     /// The band left at the top when there is no strip: just enough for the
     /// traffic lights to sit in, and nothing else.
     static let bare: CGFloat = 34
@@ -171,6 +175,22 @@ enum Motion {
 
     static var quick: Animation? {
         reduced ? nil : .easeOut(duration: 0.14)
+    }
+
+    /// The folded column or strip coming out over the page, and going back.
+    /// On glide it was slow both ways, next to Arc and Dia timed frame by
+    /// frame on the same Mac: each slides its sidebar 90% of the way out in
+    /// about 95ms and back in about 70ms, where glide took over 200ms. These
+    /// match them. Going in is damped all the way, since nothing is arriving
+    /// to settle. Fold.slide moves the window's buttons on the same numbers,
+    /// in Core Animation's terms.
+    static func fold(out: Bool) -> (response: Double, damping: Double) {
+        out ? (0.14, 0.86) : (0.13, 1)
+    }
+
+    static func folding(out: Bool) -> Animation? {
+        let spring = fold(out: out)
+        return reduced ? nil : .spring(response: spring.response, dampingFraction: spring.damping)
     }
 }
 
@@ -269,5 +289,36 @@ struct Shake: GeometryEffect {
         return ProjectionTransform(
             CGAffineTransform(translationX: sin(travel * .pi * 6) * 7 * decay, y: 0)
         )
+    }
+}
+
+extension View {
+    /// What a popover holds, on the ground colour. From macOS 26 a popover
+    /// clips what it holds to its own rounded glass; before, an opaque
+    /// background was drawn out to the content's square edges, past the
+    /// popover's rounded corners (macOS 15, by email). There the popover is
+    /// handed the colour and fills its own shape with it, arrow included.
+    /// `card`: drawn as its own rounded card, with an edge, on macOS 26.
+    func popoverGround(card: Bool = false) -> some View {
+        modifier(PopoverGround(card: card))
+    }
+}
+
+private struct PopoverGround: ViewModifier {
+    let card: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            if card {
+                content
+                    .background(Palette.ground)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
+            } else {
+                content.background(Palette.ground)
+            }
+        } else {
+            content.presentationBackground(Palette.ground)
+        }
     }
 }

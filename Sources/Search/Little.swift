@@ -70,7 +70,7 @@ final class LittleWindow: NSObject, NSWindowDelegate {
     /// Everything else is the page's.
     func take(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        let key = event.shortcutCharacters
         if event.keyCode == 53 && flags.isEmpty || key == "w" && flags == .command {
             window.performClose(nil)
             return true
@@ -128,7 +128,15 @@ struct LittleView: View {
             }
             .padding(.horizontal, 10)
             .frame(height: 34)
-            WebStage(page: tab.built ?? tab.web)
+            ZStack {
+                WebStage(page: tab.built ?? tab.web)
+                // A page that never came says so, with Try again, as in a tab.
+                if let failure = tab.failure {
+                    Trouble(message: failure) { tab.reload() }
+                        .transition(.opacity)
+                }
+            }
+            .animation(Motion.quick, value: tab.failure)
         }
         .background(Palette.ground)
         .ignoresSafeArea()

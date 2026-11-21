@@ -332,11 +332,93 @@ private func testCompletionFinishesWWWSitesWithoutTheirWWW() {
     Checks.expect(history.completion(for: "plain-t", among: plain) == nil, "dropping the www must not turn an http page into https")
 }
 
+@MainActor
+private func testOneLetterCompletesOnlyTheTopVisitedSite() {
+    Store.use("one-letter")
+    let history = History()
+    for _ in 0..<5 { history.record(url("https://x.com/"), title: "X") }
+    history.record(url("https://x.com/home"), title: "Home")
+    let options = history.suggestions(for: "x", limit: 3)
+    Checks.expect(options.first?.key == "x.com", "x.com should be the top row for x, got \(options.map(\.key))")
+    Checks.expect(history.completion(for: "x", among: options) == ".com", "one letter should finish the top visited site (#696)")
+    Checks.expect(history.completion(for: "X", among: options) == ".com", "one letter should finish whatever its case")
+    let room = options.filter { $0.url.path() == "/home" }
+    Checks.expect(history.completion(for: "x", among: room) == nil, "one letter must not finish a page inside a site")
+    let known = history.suggestions(for: "q", limit: 3)
+    Checks.expect(history.completion(for: "q", among: known) == nil, "one letter must not finish a name the app merely knows")
+    history.record(url("https://netflix-test.example/"), title: "N")
+    let inside = history.suggestions(for: "e", limit: 3).filter { $0.key.hasPrefix("netflix") }
+    Checks.expect(history.completion(for: "e", among: inside) == nil, "a letter inside a name still finishes nothing")
+    if let top = options.first {
+        let lower = [Suggestion(key: "q-test.example", title: "", url: url("https://q-test.example/"), kind: .known), top]
+        Checks.expect(history.completion(for: "x", among: lower) == nil, "one letter finishes only the top row")
+    }
+    Checks.expect(history.completion(for: "x.", among: options) == "com", "two letters still complete as before")
+}
+
+
+/// A title that keeps changing — an inbox counting its mail — waits for the
+/// next write instead of making one; the first title a page lands with
+/// doesn't; quitting writes the latest (upstream #1044, #971).
+@MainActor
+private func testTitleChurnWaitsForTheNextWrite() {
+    Store.use("title-churn")
+    let file = Store.file("history.json")
+    let history = History()
+    let inbox = url("https://mail.example.test/inbox")
+    history.record(inbox, title: "")
+    _ = savedFile()
+    try? FileManager.default.removeItem(at: file)
+
+    history.retitle(inbox, "(1) Inbox")
+    Checks.expect(savedFile().contains("(1) Inbox"), "a page's first title should be written")
+    try? FileManager.default.removeItem(at: file)
+
+    history.retitle(inbox, "(2) Inbox")
+    history.retitle(inbox, "(3) Inbox")
+    Checks.expect(savedFile().isEmpty, "a title changing again should not rewrite the file")
+
+    history.flush()
+    let quit = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+    Checks.expect(quit.contains("(3) Inbox"), "quitting should write the latest title")
+}
+
+/// A visit made just before quitting reaches the file without waiting out
+/// the save's pause.
+@MainActor
+private func testQuitWritesAVisitStillWaiting() {
+    Store.use("quit-flush")
+    let file = Store.file("history.json")
+    let history = History()
+    history.record(url("https://late.example.test/page"), title: "Last page")
+    history.flush()
+    let now = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+    Checks.expect(now.contains("Last page"), "flush should write a visit still in its pause")
+}
+
+/// A session that never restarts keeps no more than the cap (and its slack)
+/// in memory, and the page just visited is never the one cut (upstream #1077).
+@MainActor
+private func testLongSessionIsCutBackToTheCap() {
+    Store.use("long-session")
+    let history = History()
+    let old = Date().addingTimeInterval(-90 * 86_400)
+    for i in 0..<(History.cap + History.slack + 10) {
+        history.take(url("https://site\(i).example.test/"), title: "Site \(i)", count: 1, last: old)
+    }
+    history.record(url("https://newest.example.test/"), title: "Newest")
+    let kept = history.suggestions(for: "example.test", limit: 100_000)
+    Checks.expect(kept.count <= History.cap + History.slack && kept.count >= History.cap - 10, "memory should be cut back to about the cap, kept \(kept.count)")
+    Checks.expect(history.suggestions(for: "newest", limit: 5).contains { $0.title == "Newest" },
+                  "the page just visited should survive the cut")
+}
+
 @main
 private struct HistoryRegression {
     @MainActor
     static func main() {
         testRecordAndTakeKeepCanonicalIdentityComponents()
+        testOneLetterCompletesOnlyTheTopVisitedSite()
         testRetitleAndForgetUseIndependentIdentities()
         testLegacyLoadRebuildsIdentityFromStoredURL()
         testRootCreditsKeepOriginAndDirectRootCountsOnce()
@@ -344,6 +426,9 @@ private struct HistoryRegression {
         testCredentialsNeverReachTheFile()
         testLegacyCreditsMoveToTheOriginTheirPagesUsed()
         testCompletionFinishesWWWSitesWithoutTheirWWW()
+        testTitleChurnWaitsForTheNextWrite()
+        testQuitWritesAVisitStillWaiting()
+        testLongSessionIsCutBackToTheCap()
 
         guard Checks.failures.isEmpty else {
             fputs("\(Checks.failures.count) History regression assertion(s) failed.\n", stderr)

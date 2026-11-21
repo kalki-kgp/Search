@@ -198,7 +198,36 @@ final class Shield: ObservableObject {
     /// lists reaches pages that are already open.
     func reach(_ all: @escaping () -> [WKUserContentController]) { controllers = all }
 
+    // The lists come back from disk (or the short list compiles) in the
+    // background at launch, and a page that starts loading before they are
+    // in makes its first requests without them: `waiting` gives it the lists
+    // a moment later, after the ad and tracker requests have gone. So the
+    // first loads wait for them, at most a second, once per launch; after
+    // that nothing waits (upstream #1248).
+    private var held: [() -> Void] = []
+    private var settled = false
+
+    /// Runs `load` now, or, while the lists are on their way at launch, once
+    /// they are in, preparing them failed, or a second has passed.
+    func whenReady(_ load: @escaping () -> Void) {
+        guard !settled, lists.isEmpty, enabled else { return load() }
+        if held.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                MainActor.assumeIsolated { self?.release() }
+            }
+        }
+        held.append(load)
+    }
+
+    private func release() {
+        settled = true
+        let loads = held
+        held = []
+        loads.forEach { $0() }
+    }
+
     private func install(_ fresh: [WKContentRuleList]) {
+        defer { release() }
         let old = lists
         lists = fresh
         everInstalled.append(contentsOf: fresh)
@@ -615,6 +644,7 @@ final class Shield: ObservableObject {
               let store = WKContentRuleListStore.default()
         else {
             trouble = "Couldn't build the block list"
+            release()
             return
         }
         store.compileContentRuleList(forIdentifier: "office-shield", encodedContentRuleList: json) { [weak self] compiled, error in
@@ -622,6 +652,7 @@ final class Shield: ObservableObject {
                 guard let self else { return }
                 guard let compiled else {
                     self.trouble = error?.localizedDescription ?? "Compiling the block list failed"
+                    self.release()
                     return
                 }
                 // Brave's may have beaten it here.

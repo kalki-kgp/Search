@@ -73,6 +73,8 @@ final class History: ObservableObject {
     /// it each time cost more than everything else a key press does.
     private var recentCache: [Trace]?
     private var saving = false
+    /// Something the file doesn't have yet: a visit, or a title that changed.
+    private var owed = false
     /// Visits counted at most: far more than anyone makes, and room to add.
     static let mostVisits = 1_000_000_000
     /// These are derived once when a visit enters memory. Suggestions run on
@@ -80,6 +82,14 @@ final class History: ObservableObject {
     /// in that loop.
     private var pageText: [String: PageText] = [:]
     private var visitedHosts: Set<String> = []
+    /// Places kept: in the file, and in memory once a session has run long
+    /// enough to be cut (see `prune`).
+    nonisolated static let cap = 2_000
+    /// How far memory may run past `cap` before it is cut back to it, so a
+    /// busy day's browsing sorts the history once every few hundred pages
+    /// and not once for each. Also how many of the newest places the cut
+    /// keeps whatever they score.
+    static let slack = 250
 
     init() { load() }
 
@@ -206,7 +216,32 @@ final class History: ObservableObject {
             )
         }
         if let seen = visits[key] { remember(seen, url: url) }
+        prune()
         save()
+    }
+
+    /// Memory is cut back to `cap` places once it is `slack` past it: otherwise
+    /// a session that never restarts holds, and the field scans on every key,
+    /// every page it has ever seen. The newest `slack` places stay whatever
+    /// they score, so the page you are on never leaves the History window or
+    /// the field. The rest of the cap goes to the highest `score`, the order
+    /// the file keeps (upstream #1077).
+    private func prune() {
+        guard visits.count > History.cap + History.slack else { return }
+        let now = Date()
+        let newest = visits.values.sorted { $0.last > $1.last }.prefix(History.slack)
+        var kept = Set(newest.map(\.key))
+        let best = visits.values
+            .filter { !kept.contains($0.key) }
+            .sorted { History.score($0, now: now) > History.score($1, now: now) }
+            .prefix(History.cap - History.slack)
+        kept.formUnion(best.map(\.key))
+        let dropped = Set(visits.keys).subtracting(kept)
+        visits = visits.filter { kept.contains($0.key) }
+        for key in dropped { pageText.removeValue(forKey: key) }
+        // Once, not as each page goes: asking whether another page still has
+        // the host, for each of a few hundred, would scan the rest each time.
+        visitedHosts = Set(pageText.values.lazy.map(\.host).filter { !$0.isEmpty })
     }
 
     /// Somewhere another browser has been. Counted as it was counted there,
@@ -228,6 +263,7 @@ final class History: ObservableObject {
             visits[key] = visit
             remember(visit, url: url)
         }
+        prune()
     }
 
     /// After a batch of `take`s.
@@ -237,9 +273,14 @@ final class History: ObservableObject {
     func retitle(_ url: URL, _ title: String) {
         let key = History.identity(for: url)
         guard !title.isEmpty, var seen = visits[key], seen.title != title else { return }
+        let first = seen.title.isEmpty
         seen.title = title
         visits[key] = seen
-        save()
+        // Only the title a page lands with is written at once. One that keeps
+        // changing after it — an inbox counting its mail — would rewrite the
+        // whole file each time, so it waits for the next visit's write, or
+        // for quitting (upstream #1044).
+        if first { save() } else { owed = true }
     }
 
     func forget() {
@@ -365,10 +406,17 @@ final class History: ObservableObject {
     /// What the field should draw greyed out after the caret: the rest of the
     /// best match, or nothing if it doesn't carry on from what was typed.
     func completion(for typed: String, among options: [Suggestion]) -> String? {
-        guard !typed.isEmpty, typed.count >= 2 else { return nil }
-        for option in options {
+        guard !typed.isEmpty else { return nil }
+        // One letter finishes only the top row, and only when it is the
+        // front door of a site you have been to: "x" becomes x.com, as in
+        // Safari and Chrome (#696). A room inside a site, a name the app
+        // merely knows, or a lower row waits for a second letter.
+        let single = typed.count == 1
+        if single, let first = options.first?.kind, first != .visited { return nil }
+        for option in single ? Array(options.prefix(1)) : options {
             for (key, target) in History.endings(of: option) {
                 guard key.count >= typed.count else { continue }
+                if single, key.contains("/") || key.contains("?") || key.contains("#") { continue }
                 let prefix = String(key.prefix(typed.count))
                 guard prefix.caseInsensitiveCompare(typed) == .orderedSame else { continue }
                 let rest = String(key.dropFirst(typed.count))
@@ -535,20 +583,30 @@ final class History: ObservableObject {
     /// Coalesced: a busy minute of browsing writes the file once, not thirty
     /// times, and never on the main thread.
     private func save() {
+        owed = true
         guard !saving else { return }
         saving = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self else { return }
-            saving = false
-            let now = Date()
-            // A cap, so the file can't grow without end. What goes is what has
-            // been visited least and longest ago.
-            let snapshot = self.visits
-            let file = History.file
-            Disk.write(file) {
-                let list = Array(snapshot.values.sorted { History.score($0, now: now) > History.score($1, now: now) }.prefix(2_000))
-                return try? JSONEncoder().encode(list)
-            }
+            self?.write(now: false)
+        }
+    }
+
+    /// Quitting: whatever the file doesn't have yet — the write still waiting
+    /// out `save`'s pause, a title that changed since — made before the
+    /// process ends rather than never (upstream #971, #1044).
+    func flush() { write(now: true) }
+
+    private func write(now: Bool) {
+        saving = false
+        guard owed else { return }
+        owed = false
+        let date = Date()
+        // A cap, so the file can't grow without end. What goes is what has
+        // been visited least and longest ago.
+        let snapshot = visits
+        Disk.write(History.file, now: now) {
+            let list = Array(snapshot.values.sorted { History.score($0, now: date) > History.score($1, now: date) }.prefix(History.cap))
+            return try? JSONEncoder().encode(list)
         }
     }
 

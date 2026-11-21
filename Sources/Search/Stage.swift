@@ -35,7 +35,11 @@ struct Page: View {
                 Image(nsImage: cover)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    // No smaller than nothing: a picture taken in a window of
+                    // another shape would otherwise ask for its own size, and
+                    // push the column aside until the page woke (#664).
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                           alignment: .topLeading)
                     .clipped()
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -201,6 +205,14 @@ private struct HistoryList: View {
 struct WebStage: NSViewRepresentable {
     let page: NSView?
 
+    // The hosted page's previous bounds are not an ideal size for this layout.
+    // Accept the offered room so a window can shrink around its browser chrome.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: StageView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite else { return nil }
+        return CGSize(width: width, height: height)
+    }
+
     func makeNSView(context: Context) -> StageView { StageView() }
 
     func updateNSView(_ view: StageView, context: Context) {
@@ -326,7 +338,7 @@ final class StageView: NSView {
 
 /// What there is to say when the page never came. One line, and the only thing
 /// worth offering — another go.
-private struct Trouble: View {
+struct Trouble: View {
     let message: String
     let retry: () -> Void
 
@@ -418,6 +430,10 @@ struct DragStrip: NSViewRepresentable {
 
         private var pressed: NSEvent?
         private var moved = false
+        private var over = false
+        /// How many strips the pointer is over, per window: the strips
+        /// overlap (the corner's lies in the row's).
+        private static var hovered: [ObjectIdentifier: Int] = [:]
 
         /// The strip moves the window and answers the double-click itself.
         /// Left to say yes, AppKit takes both on too in the title bar the
@@ -433,16 +449,41 @@ struct DragStrip: NSViewRepresentable {
             return super.hitTest(point)
         }
 
+        /// The window is not movable while the pointer is over a strip: macOS
+        /// starts a title bar's drag before the app sees the press, so a tab
+        /// picked up in the row carried the window off unless the window was
+        /// unmovable already. Elsewhere it is movable, for Window › Move &
+        /// Resize, tiling and window managers (#286).
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        }
+
+        override func mouseEntered(with event: NSEvent) { hover(true) }
+        override func mouseExited(with event: NSEvent) { hover(false) }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            hover(false)
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        private func hover(_ on: Bool) {
+            guard let window, on != over else { return }
+            over = on
+            let id = ObjectIdentifier(window)
+            let count = max(0, (Strip.hovered[id] ?? 0) + (on ? 1 : -1))
+            Strip.hovered[id] = count == 0 ? nil : count
+            window.isMovable = count == 0
+        }
+
         override func mouseDown(with event: NSEvent) {
             pressed = event
             moved = false
         }
 
-        /// The window is not movable while a press lasts (see dress in
-        /// App.swift): a tab picked up in the strip would carry the window
-        /// off with it. Here it is let go for the one drag, handed to the
-        /// system's own window drag so it snaps and tiles as any window does,
-        /// and stays movable after it, as between presses.
+        /// Here the window is let go for the one drag, handed to the system's
+        /// own window drag so it snaps and tiles as any window does.
         override func mouseDragged(with event: NSEvent) {
             guard let window, let pressed, !moved else { return }
             let dx = event.locationInWindow.x - pressed.locationInWindow.x
@@ -452,6 +493,7 @@ struct DragStrip: NSViewRepresentable {
             moved = true
             window.isMovable = true
             window.performDrag(with: pressed)
+            window.isMovable = Strip.hovered[ObjectIdentifier(window)] == nil
         }
 
         /// A double-click does what a title bar's does, unless this strip

@@ -1,10 +1,29 @@
 import SwiftUI
 
+/// Find on Page's words, its two switches and what the page last answered
+/// (`Browser.seeking`): the find bar watches it, and nothing else has to.
+@MainActor
+final class FindState: ObservableObject {
+    @Published var needle = ""
+    @Published var matchCase = false
+    @Published var wholeWords = false
+    @Published var missed = false
+    @Published var focus = 0
+    @Published var result: PageFind.Result?
+}
+
 /// Looking for a word on the page. A pill in the top corner, the same white and
 /// hairline as everything else that floats, and gone the moment it isn't wanted.
 struct FindBar: View {
     @ObservedObject var browser: Browser
     var availableWidth: CGFloat? = nil
+    /// The words and the page's answer, which `browser` doesn't announce.
+    @ObservedObject private var seeking: FindState
+
+    init(browser: Browser) {
+        self.browser = browser
+        seeking = browser.seeking
+    }
 
     @FocusState private var focused: Bool
 
@@ -91,6 +110,8 @@ struct FindBar: View {
         .shadow(color: .black.opacity(0.10), radius: 18, y: 5)
         .padding(.top, 12)
         .padding(.trailing, 14)
+        .frame(maxWidth: availableWidth == nil ? nil : .infinity,
+               maxHeight: availableWidth == nil ? nil : .infinity, alignment: .topTrailing)
         .animation(Motion.quick, value: browser.missed)
         .onAppear(perform: focus)
         .onChange(of: browser.findFocus) { _, _ in focus() }

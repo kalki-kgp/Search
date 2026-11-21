@@ -34,7 +34,7 @@ On the installed browser, only when they asked you to drive that window: `tabs`,
 
 ## Get a test world listening
 
-One process per world. Quit a process only after its executable path is this repo's `build/Search.app` or a `.build/` binary, or its environment contains `SEARCH_PROBE`. Leave `/Applications/Search.app` alone. `killall`, quitting by the name Search, and `osascript` quit hit the installed app too: same bundle id, same process name.
+One process per world. Quit a process only after its executable path is this repo's `build/Search.app` or a `.build/` binary, or its environment contains `SEARCH_PROBE`. Leave `/Applications/Search.app` alone. `killall`, quitting by the name Search, and `osascript` quit hit the installed app too: same bundle id, same process name. A `SEARCH_DEV=1 ./build.sh` build shows as `Search-<branch>` on a yellow icon in the Dock and ⌘Tab (see build.sh), but that name is only what people see: its process is still `Search`, so go by the executable path.
 
 1. `./bench --test tabs` (or `--world NAME`). A tab list means that world is listening. Do not launch another.
 2. If it prints `Search isn't listening`:
@@ -165,6 +165,17 @@ Needs macOS 15.4 or later. Do this on a test world. Ids here are extension ids f
 Poll `extensions` until `busy` is `""`. Then read `loaded`, `errors`, and `reported` for that id.
 
 `ext-press ID` opens its popup. While that popup is the one open, `ext-popup ID JS` runs JavaScript in it and `ext-shot ID PATH` writes a PNG. `ext-page ID [PATH]` opens one of its own pages in a bench tab, prints that tab id, and `eval` there runs with the extension's APIs. `ext-reload ID` loads it again. A folder extension is copied in fresh. `ext-pin ID [on|off]`, `ext-enable ID on|off`, and `ext-remove ID` change that world. `ext-answer yes|no|ask` (test only) answers later permission questions and lists what was asked.
+
+## From an MCP client
+
+`./bench-mcp` is the same bench as MCP tools, for an agent that has it registered (`claude mcp add search-bench -- /path/to/Search/bench-mcp`). It only drives test worlds it started itself: `open_session` with no world starts `build/Search.app` hidden in a fresh `agent-…` world and wipes it on `close_session`; with `world` it starts that test world and keeps it. A world that is already open, by `fresh.sh`, a test or anything else, gets `world_in_use`, and a second controller on the same world gets `world_busy`. Every request checks that the socket is still held by the process the session started; if not, `not_ours`.
+
+- `open_tab` returns a page handle (`p2`); `read_page` returns element handles (`p2.s1.e4`) with role, name, value and box. The next `read_page`, or the page going elsewhere, ends them: `stale_element` means read again.
+- `click` is a real click (the bench's `tap`) after checking the element is attached, visible and not covered (`obscured` names what covers it). `type` sets the field and reports `verified`; `keys: true` types real key events. Password and card fields are never read back.
+- `wait_for` takes `text`, `url`, `selector`, `role`, `name`, `gone`; with none, it waits for the load. A timeout is an error and repeats nothing.
+- `bench` sends any other socket request to the session's world, with a page handle allowed in `id`. `quit` is refused: close the session instead.
+
+Prefer it to shell calls when the client has it: the lease, the cleanup and the handle checks come with it.
 
 ## Failures
 

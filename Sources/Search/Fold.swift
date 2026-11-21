@@ -45,12 +45,12 @@ extension Browser {
     /// ⌘S. The column, or the strip across the top, out of the way, or back.
     func toggleFold() {
         peeking = false
-        withAnimation(Motion.glide) { folded.toggle() }
+        withAnimation(Motion.folding(out: folded)) { folded.toggle() }
     }
 
     /// The folded column out over the page, or back in.
     func peek(_ out: Bool) {
-        withAnimation(Motion.glide) { peeking = out }
+        withAnimation(Motion.folding(out: out)) { peeking = out }
     }
 }
 
@@ -74,8 +74,11 @@ struct Fold: View {
     /// How far past the window's edge, on the column's side, the pointer
     /// still counts as on it.
     private static let overshoot: CGFloat = 48
-    /// The grace before the column goes back in.
-    private static let grace: TimeInterval = 0.3
+    /// The grace before the column goes back in. With the time the slide
+    /// takes to start, the column begins to go as soon after the pointer
+    /// leaves as Dia's does. Arc doesn't wait at all, which loses the column
+    /// to a hand that overshoots on the way back in.
+    private static let grace: TimeInterval = 0.065
     /// How far down from the top, in full screen, the edge leaves the
     /// window's buttons alone: the menu bar and the title bar macOS brings
     /// down with it.
@@ -111,15 +114,22 @@ struct Fold: View {
                 // tabs, and the shadow fell from every title and icon rather
                 // than from the row's edge.
                 TabBar(browser: browser)
-                    .transition(.move(edge: .top)
-                        .combined(with: .casting(FoldShadow(y: 4, behind: true))))
+                    .transition(.casting(FoldShadow(y: 4, behind: true))
+                        .combined(with: .move(edge: .top)))
             }
             ZStack(alignment: onRight ? .trailing : .leading) {
                 Color.clear.frame(width: 0)
                 if folding, prefs.sidebar, browser.peeking {
+                    // Its shadow falls from a ground laid under it, as the
+                    // strip's does. Cast by the column itself, it was drawn
+                    // again from every row, icon and title on each frame of
+                    // the slide, the column's full height over: in full
+                    // screen, the whole screen's, and the slide lagged there.
+                    // The column's own ground is opaque, so it is the same
+                    // rectangle either way.
                     SideBar(browser: browser, prefs: prefs)
-                        .transition(.move(edge: onRight ? .trailing : .leading)
-                            .combined(with: .casting(FoldShadow(x: onRight ? -4 : 4))))
+                        .transition(.casting(FoldShadow(x: onRight ? -4 : 4, behind: true))
+                            .combined(with: .move(edge: onRight ? .trailing : .leading)))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity,
@@ -167,7 +177,14 @@ struct Fold: View {
         .onChange(of: prefs.sidePosition) { _, _ in
             resetPending()
             browser.peeking = false
-            if let bar = Fold.titlebar { Fold.reset(bar, hidden: lightsOff) }
+            // This window's own bar: every window hears the change, and each
+            // had set the front window's by its own fold, the last one
+            // deciding. In full screen the buttons are macOS's to show (see
+            // hideLights); hidden here, they were missing from the bar that
+            // comes down with the menu bar until the column next came out.
+            if let window = browser.window, let bar = window.standardWindowButton(.closeButton)?.superview {
+                Fold.reset(bar, hidden: lightsOff && !window.styleMask.contains(.fullScreen))
+            }
         }
         .onChange(of: prefs.sideWidth) { _, _ in
             if browser.folded { hideLights() }
@@ -176,7 +193,7 @@ struct Fold: View {
             resetPending()
             guard prefs.sidebar else { return }
             browser.peeking = false
-            withAnimation(Motion.glide) { browser.folded = hides }
+            withAnimation(Motion.folding(out: !hides)) { browser.folded = hides }
         }
         // The address typed into a row is done with, and the pointer went
         // elsewhere while it was: the column goes the way it would have.
@@ -283,10 +300,30 @@ struct Fold: View {
             // Off the window, so whatever is under the pointer isn't it. The
             // wait starts again with every move: the column comes once the
             // pointer stops, not while it is on its way somewhere else.
-            arrive(resting: true)
+            // Unless it is pinned against the screen's own edge, with no
+            // display beyond: it has nowhere else to be going. A window kept
+            // off the screen's edge by a tiling window manager's gaps
+            // otherwise always waited here, and a hand still settling after
+            // the fling started the wait again with every move. Not with the
+            // Dock hidden on that side, which the same push brings out.
+            let further = NSPoint(x: screen.x + (onRight ? 1 : -1), y: screen.y)
+            if NSScreen.screens.contains(where: { NSMouseInRect(further, $0.frame, false) })
+                || Fold.dockHides(right: onRight) {
+                arrive(resting: true)
+            } else {
+                pass()
+                peek(true)
+            }
         } else {
             pass()
         }
+    }
+
+    /// Whether the Dock hides on the screen's `right` (or left) edge, and
+    /// comes out there when the pointer pushes against it.
+    static func dockHides(right: Bool) -> Bool {
+        guard let dock = UserDefaults(suiteName: "com.apple.dock"), dock.bool(forKey: "autohide") else { return false }
+        return dock.string(forKey: "orientation") == (right ? "right" : "left")
     }
 
     /// The pointer on the edge: out at once, or after the dwell when the
@@ -372,7 +409,7 @@ struct Fold: View {
     /// does. Shown or hidden at once, they stood in their place while the
     /// column was still sliding in under them, and vanished before it had
     /// gone. So they come in from the chosen edge and go back off it, on the
-    /// column's own spring (Motion.glide, in Core Animation's terms) — from
+    /// column's own spring (Motion.fold, in Core Animation's terms) — from
     /// wherever they are, when the pointer turns back halfway. `up` sends
     /// the strip's lights off the top edge.
     static func slide(_ bar: NSView, off: Bool, by width: CGFloat, up: Bool = false,
@@ -411,10 +448,11 @@ struct Fold: View {
             bar.isHidden = off
             return
         }
+        let fold = Motion.fold(out: !off)
         let spring = CASpringAnimation(keyPath: path)
         spring.mass = 1
-        spring.stiffness = pow(2 * .pi / 0.34, 2)
-        spring.damping = 4 * .pi * 0.82 / 0.34
+        spring.stiffness = pow(2 * .pi / fold.response, 2)
+        spring.damping = 4 * .pi * fold.damping / fold.response
         spring.fromValue = from
         spring.toValue = to
         spring.duration = spring.settlingDuration
@@ -446,6 +484,10 @@ private struct FoldShadow: ViewModifier {
     var y: CGFloat = 0
     /// Cast from a ground laid behind: the strip has no ground of its own,
     /// and a shadow from the row itself fell from every title and icon.
+    /// Combined with the slide, this comes first and the move second: the
+    /// move's offset moves only what it wraps, and a ground laid outside it
+    /// stayed where the column or the strip had been, a blank band over the
+    /// page until the slide was over.
     var behind = false
     var strength: Double = 1
 

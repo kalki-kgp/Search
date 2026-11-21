@@ -4,6 +4,11 @@
 # fetches.
 #
 #   ./build.sh                 debug-free release build, ad-hoc signed: runs here
+#   SEARCH_DEV=1 ./build.sh    the same as a dev build: yellow icon, named for
+#                              the branch (Search-split-view from
+#                              claude/split-view-4a6927)
+#   SEARCH_DEV=1 SEARCH_FEATURE=name ./build.sh
+#                              the same, named Search-name
 #   ./build.sh release dmg     + build/Search.dmg, build/Search.zip and
 #                                build/appcast.json, signed with Developer ID
 #                                if there is one in the keychain
@@ -54,6 +59,38 @@ case "$ARCH" in
 esac
 APP="$OUT/Search.app"
 NAME="Search"
+# Asked for with SEARCH_DEV=1, a dev build, on a yellow plate and named for
+# the feature it's built from: "Search-split-view" in the menu bar, the Dock
+# and ⌘Tab, so it's never taken for the installed app beside it, or for the
+# dev build from another worktree. Only the name people see changes. The
+# bundle id stays, so it shares the real app's settings, and so does the
+# folder, build/Search.app, which fresh.sh and the tests open. Not by
+# default: a plain ./build.sh is also the Search people here use every day
+# and the release candidates. What goes in a DMG or a ZIP is never one.
+case "${SEARCH_DEV:-}" in
+  0|1) DEV="$SEARCH_DEV" ;;
+  "") DEV=0 ;;
+  *) echo "SEARCH_DEV is 0 or 1, not “$SEARCH_DEV”" >&2; exit 1 ;;
+esac
+[ "$STEP" != "app" ] && [ "$DEV" = 1 ] && { echo "a dev build doesn't go in a DMG" >&2; exit 1; }
+SHOWN="$NAME"
+if [ "$DEV" = 1 ]; then
+  # The feature: SEARCH_FEATURE, or the branch's last part, without the
+  # six-character hash a worktree's name ends in (claude/split-view-4a6927
+  # is split-view). A hash has a digit in it; a word like "decade" doesn't.
+  FEATURE="${SEARCH_FEATURE:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+  FEATURE="${FEATURE##*/}"
+  if [[ "$FEATURE" =~ ^(.+)-([0-9a-f]{6})$ ]]; then
+    STEM="${BASH_REMATCH[1]}" HASH="${BASH_REMATCH[2]}"
+    [[ "$HASH" =~ [0-9] ]] && FEATURE="$STEM"
+  fi
+  # Only what's safe in a name and in InfoPlist.strings.
+  FEATURE="$(printf '%s' "$FEATURE" | tr -cd 'A-Za-z0-9._-')"
+  case "$FEATURE" in
+    ""|HEAD) SHOWN="$NAME Dev" ;;   # no branch to name it for
+    *) SHOWN="$NAME-$FEATURE" ;;
+  esac
+fi
 VERSION="$(tr -d '[:space:]' < VERSION)"
 # A build number that only ever goes up, so the updater can tell newer from
 # older without parsing version strings.
@@ -107,7 +144,7 @@ fi
 ICONSET="build/AppIcon.iconset"
 ICONDOC="build/AppIcon.icon"
 rm -rf "$ICONSET" "$ICONDOC"
-swift Icon/icon.swift "$ICONSET" "$ICONDOC" > /dev/null
+SEARCH_DEV="$DEV" swift Icon/icon.swift "$ICONSET" "$ICONDOC" > /dev/null
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
 # macOS 26's Dark, Clear and Tinted Dock styles read the icon from an asset
@@ -186,6 +223,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>LSItemContentTypes</key>
       <array><string>public.xhtml</string></array>
     </dict>
+    <!-- What a browser shows besides pages, listed under the Finder's Open
+         With (#524): a PDF, a picture, plain text (code and logs conform to
+         it), JSON. Alternate, so Search is offered there and never becomes
+         what opens them on a double-click. Pictures by name rather than
+         public.image, which takes in SVG: an SVG can carry a script, and
+         opened from the Finder it would run with its folder to read. -->
+    <dict>
+      <key>CFBundleTypeName</key><string>Document</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array><string>com.adobe.pdf</string><string>public.png</string><string>public.jpeg</string><string>com.compuserve.gif</string><string>public.heic</string><string>org.webmproject.webp</string><string>public.tiff</string><string>public.plain-text</string><string>public.json</string></array>
+    </dict>
   </array>
   <!-- A browser goes wherever it is pointed, including at http sites and at
        whatever is running on localhost. -->
@@ -198,13 +248,28 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>Websites you visit can ask to use your camera. Search asks you the first time each site does and keeps your answer; Settings › Privacy forgets them.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Websites you visit can ask to use your microphone. Search asks you the first time each site does and keeps your answer; Settings › Privacy forgets them.</string>
+  <!-- Location: the first key is the one macOS has always read; the second
+       is the one CoreLocation's requestWhenInUseAuthorization documents.
+       Same sentence in both. -->
   <key>NSLocationUsageDescription</key>
+  <string>Websites you visit can ask for your location. Search asks you each time a site does, unless you choose Always allow for it; Settings › Privacy forgets those choices.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
   <string>Websites you visit can ask for your location. Search asks you each time a site does, unless you choose Always allow for it; Settings › Privacy forgets those choices.</string>
   <key>NSDownloadsFolderUsageDescription</key>
   <string>Files you download are saved to your Downloads folder.</string>
 </dict>
 </plist>
 PLIST
+# A dev build's name, as a localised one: under the icon in the Dock, in
+# ⌘Tab and in Finder, macOS shows the bundle's folder name otherwise. The
+# plain names above stay "Search", matching the folder, since a folder named
+# otherwise reads to macOS as renamed by hand, and then the folder wins.
+if [ "$DEV" = 1 ]; then
+  mkdir -p "$APP/Contents/Resources/en.lproj"
+  printf '"CFBundleDisplayName" = "%s";\n"CFBundleName" = "%s";\n' "$SHOWN" "$SHOWN" \
+    > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
+  /usr/libexec/PlistBuddy -c "Add :LSHasLocalizedDisplayName bool true" "$APP/Contents/Info.plist"
+fi
 
 # Signing. A Developer ID certificate, when there is one, with the hardened
 # runtime Gatekeeper insists on for anything notarised; otherwise ad-hoc,
@@ -217,6 +282,13 @@ IDENTITY="${SEARCH_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/
 # this script, both go in; without it, the app is signed as before, because
 # a restricted entitlement with no profile behind it is an app that won't open.
 ENTITLEMENTS="Search.entitlements"
+# A release that ships without it loses passkeys and the keychain items the
+# entitled builds saved (1.0.6, build 202610241534, went out that way from a
+# worktree the git-ignored profile hadn't been copied into): ship refuses.
+if [ "$STEP" = "ship" ] && [ ! -f "Search.provisionprofile" ] && [ -z "${SEARCH_ALLOW_NO_PASSKEYS:-}" ]; then
+  echo "ship: Search.provisionprofile is missing here (it's git-ignored: copy it from the main checkout)" >&2
+  exit 1
+fi
 if [ -f "Search.provisionprofile" ]; then
   cp "Search.provisionprofile" "$APP/Contents/embedded.provisionprofile"
   ENTITLEMENTS="Search.passkeys.entitlements"
@@ -244,7 +316,7 @@ else
   [ "$STEP" != "app" ] && echo "no Developer ID certificate found — the DMG will only open on this Mac" >&2
 fi
 
-echo "built: $APP ($VERSION, $ARCH, build $BUILD)"
+echo "built: $APP as $SHOWN ($VERSION, $ARCH, build $BUILD)"
 [ "$STEP" = "app" ] && exit 0
 
 # The disk image: the app beside a shortcut to Applications, on a white

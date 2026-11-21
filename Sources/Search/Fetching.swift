@@ -35,6 +35,8 @@ final class FetchEntry: ObservableObject, Identifiable {
         let modified: Date
     }
 
+    /// What the row says while WebKit is stopping it.
+    var stopping: String { pendingStop == .cancel ? "Cancelling…" : "Pausing…" }
     var canPause: Bool { state == .downloading && request.map(Self.replayable) == true }
     var canResume: Bool {
         (state == .paused || state == .failed) && resumeData != nil && store != nil
@@ -62,7 +64,7 @@ final class FetchEntry: ObservableObject, Identifiable {
     /// The name asked for, before " 2" and so on: a retry is numbered afresh.
     var retryName: String
     var download: WKDownload?
-    var pendingStop: StopAction?
+    @Published var pendingStop: StopAction?
     var operationID = UUID()
     private var destinationWasAbsent: Bool?
     private var partialFileVersion: PartialFileVersion?
@@ -619,10 +621,15 @@ struct FetchDoor: View {
         self.prefs = browser.prefs
     }
 
+    /// Whether it is in the row, for those that make room for it.
+    static func shows(_ fetches: Fetches, _ prefs: Preferences) -> Bool {
+        fetches.showing || !fetches.entries.isEmpty || prefs.alwaysShowsDownloads
+    }
+
     var body: some View {
         // Always there with Settings › Downloads › Always show the downloads
         // button: an arrow at rest, the circle while a file comes in.
-        if fetches.showing || !fetches.entries.isEmpty || prefs.alwaysShowsDownloads {
+        if Self.shows(fetches, prefs) {
             Button { browser.hoarding = true } label: {
                 ZStack {
                     if !fetches.showing {

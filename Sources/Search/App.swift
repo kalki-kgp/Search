@@ -73,16 +73,27 @@ struct SearchApp: App {
                 Divider()
                 Button("Close Tab") { browser.closeFront() }
                     .shortcut("file.closeTab")
+                Button("Close Window") { browser.closeWindow() }
+                    .shortcut("file.closeWindow")
             }
             CommandGroup(replacing: .printItem) {
                 Button("Share…") { browser.share() }
                     .shortcut("file.share")
+                    .disabled(browser.active?.isBlank ?? true)
+                Button("Save Page As…") { browser.savePage() }
+                    .shortcut("file.savePage")
+                    .disabled(browser.active?.isBlank ?? true)
+                Button("Export as PDF…") { browser.exportPDF() }
+                    .shortcut("file.exportPDF")
                     .disabled(browser.active?.isBlank ?? true)
                 Button("Print…") { browser.printPage() }
                     .shortcut("file.print")
                     .disabled(browser.active?.isBlank ?? true)
             }
             CommandGroup(after: .pasteboard) {
+                Button("Copy Clean Link") { browser.copyCleanLink() }
+                    .shortcut("edit.copyCleanLink")
+                    .disabled(browser.active?.isBlank ?? true)
                 Divider()
                 Button("Find on Page…") { browser.openFind() }
                     .shortcut("edit.find")
@@ -114,6 +125,13 @@ struct SearchApp: App {
                         Text(glyph.title).tag(glyph)
                     }
                 }
+                // Every group of the space on screen, folded or opened at once.
+                Button("Fold All Groups") { browser.foldAllGroups(true) }
+                    .shortcut("view.foldGroups")
+                    .disabled(!browser.canFoldAllGroups)
+                Button("Unfold All Groups") { browser.foldAllGroups(false) }
+                    .shortcut("view.unfoldGroups")
+                    .disabled(!browser.canUnfoldAllGroups)
                 Divider()
                 Button("Reload Page") { browser.reload() }
                     .shortcut("view.reload")
@@ -673,6 +691,10 @@ struct ContentView: View {
         .onAppear {
             watchKeys()
             browser.askFocus()
+            // Over a page, the page has the keys from the start. Left with
+            // the window, the Mac's keyboard navigation handed them to the
+            // first button that takes them, Reload, ringed.
+            handBack()
             // Addresses from other apps have somewhere to go from here on.
             Links.hand(to: browser)
             BookmarkMenu.shared.start(for: browser)
@@ -924,10 +946,10 @@ struct ContentView: View {
         // Nor by its title bar, which the strip is all the way down: AppKit
         // would move the window on any drag there, a tab picked up to take
         // it elsewhere in the row included. DragStrip moves it instead. The
-        // window stays movable between clicks, though — macOS's Window ›
-        // Move & Resize, its tiling and the tools that arrange windows ask
-        // for a movable one (#286) — and is made unmovable only while a
-        // press lasts (see Browsers.watchFrames).
+        // window stays movable, though — macOS's Window › Move & Resize, its
+        // tiling and the tools that arrange windows ask for a movable one
+        // (#286) — and is made unmovable only while the pointer is over the
+        // strip (see DragStrip).
         window.isMovable = true
 
         // The traffic lights set in from the corner and centred in the strip's
@@ -1009,6 +1031,7 @@ struct ContentView: View {
                 if !event.modifierFlags.contains(.command) { browser.landSummon() }
                 return event
             }
+            if browser.holdKey(event) { return nil }
             return take(event) ? nil : event
         }
         ContentView.keyHooks[ObjectIdentifier(browser)] = { event in take(event) ? nil : event }
@@ -1044,7 +1067,7 @@ struct ContentView: View {
     /// them to scroll the page sideways and never hands them back, so
     /// passing them on left them dead for going back and forward (#324).
     private func pageFirst(_ event: NSEvent, key: String, shifted: Bool) -> Bool {
-        let reserved = (key == "t") || (key == "w" && !shifted) || (key == "n" && shifted)
+        let reserved = (key == "t") || (key == "w") || (key == "n" && shifted)
             || ((key == "[" || key == "]" || key == "{" || key == "}") && shifted)
             || (key == "z" && browser.veiling)
             || (key == "k" && !shifted)
@@ -1076,12 +1099,13 @@ struct ContentView: View {
     }
 
     /// Whether the tab switcher can come up: in this window, with nothing
-    /// over the page it would have to cover.
+    /// over the page it would have to cover. The find bar isn't one: it sits
+    /// in a corner, stays open, and looks again on the tab picked (#553).
     private func canSwitchTabs(_ event: NSEvent) -> Bool {
         guard let window, event.window === window else { return false }
         return !browser.tuning && !browser.recalling && !browser.hoarding &&
             !browser.bookmarking && !browser.welcoming && !browser.managing &&
-            !browser.reviewing && !browser.finding && !browser.bookmarksOpen &&
+            !browser.reviewing && !browser.bookmarksOpen &&
             !browser.veiling && !browser.summoning && !browser.makingSpace &&
             browser.peekTab == nil && browser.editingTab == nil &&
             browser.asking == nil && browser.offering == nil && browser.suggesting == nil
@@ -1099,14 +1123,14 @@ struct ContentView: View {
         // window menus act on; every other key is its page's.
         if let popup = Browsers.browser(for: event.window), popup.extensionPopup != nil {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard event.charactersIgnoringModifiers?.lowercased() == "w", flags == .command else { return false }
+            guard event.shortcutCharacters == "w", flags == .command else { return false }
             popup.window?.performClose(nil)
             return true
         }
         // A key being typed into Settings › Shortcuts is for the box.
         guard !ShortcutStore.shared.recording else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        let key = event.shortcutCharacters
         let controlTab = event.keyCode == 48 && flags.contains(.control)
             && flags.isDisjoint(with: [.command, .option])
 
@@ -1168,6 +1192,18 @@ struct ContentView: View {
             // One step at a time: the list first, then the field.
             if browser.picked != nil {
                 browser.picked = nil
+                return true
+            }
+            // Something typed into a new tab: Escape clears it first, the
+            // tab staying where it is, as in Arc and Safari; the next Escape
+            // finds the tab unused and takes it away (below). Before, a typed
+            // word left Escape with nothing to do on a new tab.
+            if let blank = browser.active, blank.isBlank, browser.editingTab == nil,
+               !browser.typed.isEmpty || browser.siteChip != nil {
+                browser.siteChip = nil
+                browser.picked = nil
+                browser.typed = ""
+                blank.draft = ""
                 return true
             }
             // A new tab never sent anywhere is itself what is open: Escape
@@ -1281,7 +1317,7 @@ struct ContentView: View {
         let shifted = flags.contains(.shift)
 
         if flags.contains(.option), !shifted, !flags.contains(.control),
-           event.characters(byApplyingModifiers: [])?.lowercased() == "r" {
+           event.shortcutKey == "r" {
             if pageFirst(event, key: "r", shifted: false) { return false }
             browser.reload(fromOrigin: true)
             return true
@@ -1401,6 +1437,8 @@ struct ContentView: View {
             browser.resetZoom()
         case "w" where !shifted:
             browser.closeFront()
+        case "w" where shifted:
+            browser.closeWindow()
         case "l" where !shifted:
             browser.edit()
         case "r" where !shifted:
