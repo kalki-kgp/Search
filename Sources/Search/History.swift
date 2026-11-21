@@ -73,6 +73,8 @@ final class History: ObservableObject {
     /// it each time cost more than everything else a key press does.
     private var recentCache: [Trace]?
     private var saving = false
+    /// Something the file doesn't have yet: a visit, or a title that changed.
+    private var owed = false
     /// Visits counted at most: far more than anyone makes, and room to add.
     static let mostVisits = 1_000_000_000
     /// These are derived once when a visit enters memory. Suggestions run on
@@ -237,9 +239,14 @@ final class History: ObservableObject {
     func retitle(_ url: URL, _ title: String) {
         let key = History.identity(for: url)
         guard !title.isEmpty, var seen = visits[key], seen.title != title else { return }
+        let first = seen.title.isEmpty
         seen.title = title
         visits[key] = seen
-        save()
+        // Only the title a page lands with is written at once. One that keeps
+        // changing after it — an inbox counting its mail — would rewrite the
+        // whole file each time, so it waits for the next visit's write, or
+        // for quitting (upstream #1044).
+        if first { save() } else { owed = true }
     }
 
     func forget() {
@@ -542,6 +549,7 @@ final class History: ObservableObject {
     /// Coalesced: a busy minute of browsing writes the file once, not thirty
     /// times, and never on the main thread.
     private func save() {
+        owed = true
         guard !saving else { return }
         saving = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -549,13 +557,15 @@ final class History: ObservableObject {
         }
     }
 
-    /// Quitting: the write still waiting out `save`'s pause, made before the
-    /// process ends rather than never (upstream #971).
+    /// Quitting: whatever the file doesn't have yet — the write still waiting
+    /// out `save`'s pause, a title that changed since — made before the
+    /// process ends rather than never (upstream #971, #1044).
     func flush() { write(now: true) }
 
     private func write(now: Bool) {
-        guard saving else { return }
         saving = false
+        guard owed else { return }
+        owed = false
         let date = Date()
         // A cap, so the file can't grow without end. What goes is what has
         // been visited least and longest ago.
