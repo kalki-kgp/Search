@@ -82,6 +82,14 @@ final class History: ObservableObject {
     /// in that loop.
     private var pageText: [String: PageText] = [:]
     private var visitedHosts: Set<String> = []
+    /// Places kept: in the file, and in memory once a session has run long
+    /// enough to be cut (see `prune`).
+    nonisolated static let cap = 2_000
+    /// How far memory may run past `cap` before it is cut back to it, so a
+    /// busy day's browsing sorts the history once every few hundred pages
+    /// and not once for each. Also how many of the newest places the cut
+    /// keeps whatever they score.
+    static let slack = 250
 
     init() { load() }
 
@@ -208,7 +216,32 @@ final class History: ObservableObject {
             )
         }
         if let seen = visits[key] { remember(seen, url: url) }
+        prune()
         save()
+    }
+
+    /// Memory is cut back to `cap` places once it is `slack` past it: otherwise
+    /// a session that never restarts holds, and the field scans on every key,
+    /// every page it has ever seen. The newest `slack` places stay whatever
+    /// they score, so the page you are on never leaves the History window or
+    /// the field. The rest of the cap goes to the highest `score`, the order
+    /// the file keeps (upstream #1077).
+    private func prune() {
+        guard visits.count > History.cap + History.slack else { return }
+        let now = Date()
+        let newest = visits.values.sorted { $0.last > $1.last }.prefix(History.slack)
+        var kept = Set(newest.map(\.key))
+        let best = visits.values
+            .filter { !kept.contains($0.key) }
+            .sorted { History.score($0, now: now) > History.score($1, now: now) }
+            .prefix(History.cap - History.slack)
+        kept.formUnion(best.map(\.key))
+        let dropped = Set(visits.keys).subtracting(kept)
+        visits = visits.filter { kept.contains($0.key) }
+        for key in dropped { pageText.removeValue(forKey: key) }
+        // Once, not as each page goes: asking whether another page still has
+        // the host, for each of a few hundred, would scan the rest each time.
+        visitedHosts = Set(pageText.values.lazy.map(\.host).filter { !$0.isEmpty })
     }
 
     /// Somewhere another browser has been. Counted as it was counted there,
@@ -230,6 +263,7 @@ final class History: ObservableObject {
             visits[key] = visit
             remember(visit, url: url)
         }
+        prune()
     }
 
     /// After a batch of `take`s.
@@ -571,7 +605,7 @@ final class History: ObservableObject {
         // been visited least and longest ago.
         let snapshot = visits
         Disk.write(History.file, now: now) {
-            let list = Array(snapshot.values.sorted { History.score($0, now: date) > History.score($1, now: date) }.prefix(2_000))
+            let list = Array(snapshot.values.sorted { History.score($0, now: date) > History.score($1, now: date) }.prefix(History.cap))
             return try? JSONEncoder().encode(list)
         }
     }
