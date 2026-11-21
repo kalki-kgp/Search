@@ -194,6 +194,11 @@ extension Browser {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping ([URL]?) -> Void
     ) {
+        // Files `bench upload` has ready for this view: the chooser is
+        // answered with them, no panel, once.
+        if let files = Bench.files.removeValue(forKey: ObjectIdentifier(webView)) {
+            return completionHandler(parameters.allowsMultipleSelection ? files : Array(files.prefix(1)))
+        }
         // Over its own page only, as its other questions are (see ask): a
         // page behind, or the other page of a pair, choosing a file would
         // have it chosen under the page you are looking at. A test run never

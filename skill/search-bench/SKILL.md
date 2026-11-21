@@ -30,7 +30,7 @@ Use a test world for any work that changes chrome, installs or removes extension
 
 `select`, `key`, `resize`, and `ext-answer` fail on the installed browser. `--yes` skips an extension's install dialog only on a test run.
 
-On the installed browser, only when they asked you to drive that window: `tabs`, `probe`, and page commands against bench tabs. Leave `ui`, `select`, `key`, `resize`, and every `ext-*` command for a test world unless they named that change on their own browser. `look` and `sidebar` are saved preferences.
+On the installed browser, only when they asked you to drive that window: `tabs`, `probe`, and page commands against bench tabs (`see`, `click`, `pick`, `tap`, `upload`, …). `show` brings a bench tab forward only when they asked to watch. Leave `ui`, `select`, `key`, `resize`, and every `ext-*` command for a test world unless they named that change on their own browser. `look` and `sidebar` are saved preferences.
 
 ## Get a test world listening
 
@@ -88,7 +88,13 @@ id=$(./bench --test open https://news.ycombinator.com)
 - `read ID [§SECTION…] [CHARS]` gives a section's words, headings marked with `#`, collapsed content included and marked; 4000 characters unless asked. `seek ID WORDS` lists where the words are, with the section and a number for any control that has them, hidden text included.
 - `see ID WORDS` (no section) keeps only the headings and controls with those words.
 - `↓` and `↑` mark what is below or above the visible part of the page. `checked`, `collapsed` and `disabled` say so. A cut-off answer ends with how many more lines there were and the call that shows them.
-- `@N` works in `click`, `type`, `submit`, and `tap`, until the next `see`, `read` or `seek` renumbers. An element that has left the page answers `no @N on the page now: run see again`. The numbers live in Search's own script world, so the page can't see or disturb them.
+- `@N` works in `click`, `type`, `submit`, `tap` and `upload`. A number stays with its element for as long as it is on the page, through every `see`, `read` and `seek` of the same document; a gone element's number is never given to another. An element that has left the page answers `no @N on the page now: run see again`. The numbers live in Search's own script world, so the page can't see or disturb them.
+- Checkboxes and radios a kit draws (Material's are see-through inputs over a box) are listed like any other, named by the words beside them, and each group under its question: `? "Is this data processed ephemerally?"`, then `[15] radio "Yes"`, `[16] radio "No" checked`. `see ID WORDS` matches a question's words too.
+- `pick ID [QUESTION] ANSWER [tap]` chooses one by its words: `./bench pick "$id" ephemerally No`. One already chosen is left alone (a second click would undo a checkbox). An answer that fits more than one question is listed, not guessed: name the question.
+- `click`, `type`, `submit`, `tap`, `pick` and `upload` end with an `effect:` line when something moved: `checked`, a field's new value, `[2] button "Save" can be pressed`. `effect: nothing changed — the page didn't take it; try tap` means the page ignored a script's click: `tap` it, or `pick … tap`.
+- `tap ID SELECTOR` is a real mouse click, delivered to the view. It works on bench tabs in the browser they use, as on anything in a test world.
+- `upload ID SELECTOR PATH…` taps the button that opens a file chooser and answers the chooser with those files, no panel. Bench tabs only, absolute paths that exist. An `<input type=file>` with no box of its own is clicked from the page instead.
+- `show ID` brings a bench tab to the front of its window, when they want to watch it work.
 - `click`, `type` and `submit` answer `ok`, then where the page is and anything new that needs attention, after a page the click loaded has finished (3 s at most). `a new page since the last look`, or `changed since the last look: +§reviews −§cart`, says what moved.
 - `see`, `read`, `seek` and `text` work on any tab but a private one, and the tab shows the bench's flask while it is read. Everything that acts — `click`, `type`, `submit`, `go`, `eval`, `until`, `watch` — only on bench tabs, outside a test run. A tab that is asleep can't be read until it is woken.
 - `until ID JS [SECONDS] [MS]` re-reads an expression until it is truthy (10 s, every 100 ms) and prints `after 0.95 s: VALUE`. When time runs out it prints the last value and exits 1. It carries on across the page being replaced. Don't wait on `document.readyState`: the blank page a tab starts on is already complete. `see`, `read`, `seek` and `text` wait past it themselves.

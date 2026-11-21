@@ -28,7 +28,7 @@ _loader.exec_module(bench)
 WORLD = os.environ.get("SEARCH_WORLD") or None
 
 INSTRUCTIONS = """Search is a Mac browser you can read and drive.
-Start with tabs (every tab, a ⚗ is one you opened) or open. Read a page with see: a small page comes whole; a large one as what needs attention (lines starting with !), then sections (§name) with their size and first words. Open sections with see's sections, read their words with read, find words with seek. Things you can press or fill in are numbered [N]: pass "@N" as target to click, type and submit. Numbers last until the next see. Wait on the page with until, not sleeps.
+Start with tabs (every tab, a ⚗ is one you opened) or open. Read a page with see: a small page comes whole; a large one as what needs attention (lines starting with !), then sections (§name) with their size and first words. Open sections with see's sections, read their words with read, find words with seek. Things you can press or fill in are numbered [N]: pass "@N" as target to click, type, submit and tap. A number stays with its element as long as it is on the page. Checkboxes and radios are listed under their question (? "…"); choose one with pick. After an action, an effect: line says what it changed (checked, a button that can be pressed now) or that the page did not take it — then use tap. Wait on the page with until, not sleeps.
 You can read any tab but a private one; you can act only on tabs you opened. Close the tabs you opened when you are done."""
 
 
@@ -62,6 +62,18 @@ TOOLS = [
      {"id": tab(), "target": {"type": "string", "description": "@N or a CSS selector."}, "text": {"type": "string"}}, ["id", "target", "text"]),
     ("submit", "Submit the form around something on a page you opened.",
      {"id": tab(), "target": {"type": "string", "description": "@N or a CSS selector."}}, ["id", "target"]),
+    ("tap", "A real mouse click on something on a page you opened, for a page that ignores a script's click (custom checkboxes, menus, buttons that open a file chooser).",
+     {"id": tab(), "target": {"type": "string", "description": "@N, a CSS selector, or text=Words."}}, ["id", "target"]),
+    ("pick", "Choose a checkbox or radio by the words of its question and of its answer. One already chosen is left as it is; if more than one fits, they are listed instead.",
+     {"id": tab(), "answer": {"type": "string", "description": "The answer's words, such as No."},
+      "question": {"type": "string", "description": "Words of the question it answers; needed when the answer appears under several."},
+      "tap": {"type": "boolean", "description": "A real mouse click instead of a script's."}},
+     ["id", "answer"]),
+    ("upload", "Tap the button that opens a file chooser on a page you opened, and answer the chooser with these files from this Mac.",
+     {"id": tab(), "target": {"type": "string", "description": "@N or a CSS selector of the button that opens the chooser."},
+      "paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the files."}},
+     ["id", "target", "paths"]),
+    ("show", "Bring a tab you opened to the front of its window, so the person can watch it.", {"id": tab()}, ["id"]),
     ("until", "Wait until a JavaScript expression is true on a page you opened, reading it again every 100 ms; carries on across the page being replaced.",
      {"id": tab(), "js": {"type": "string", "description": "One expression, such as document.querySelector('.results')."},
       "seconds": {"type": "number", "description": "10 unless given."}},
@@ -87,7 +99,11 @@ def request_for(name, a):
             if key in a: r[key] = int(a[key])
         if a.get("words"): r["text"] = a["words"]
     if name == "seek": r["text"] = a.get("words", "")
-    if name in ("click", "type", "submit"): r["selector"] = a.get("target", "")
+    if name in ("click", "type", "submit", "tap", "upload"): r["selector"] = a.get("target", "")
+    if name == "pick":
+        for key in ("answer", "question", "tap"):
+            if key in a: r[key] = a[key]
+    if name == "upload": r["paths"] = [str(p) for p in a.get("paths", [])]
     if name == "type": r["text"] = a.get("text", "")
     return r
 
