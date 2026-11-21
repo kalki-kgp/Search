@@ -1176,7 +1176,13 @@ final class Tab: ObservableObject, Identifiable {
         picture = nil
         cover = nil
         adoptIcon()
-        web.open(url)
+        // Not before Shield's lists are in, at launch (see Shield.whenReady).
+        loadGeneration &+= 1
+        let token = loadGeneration
+        Shield.shared.whenReady { [weak self] in
+            guard let self, self.loadGeneration == token else { return }
+            self.web.open(url)
+        }
     }
 
     /// Brought back from the last session: everything the row needs to draw it,
@@ -1472,7 +1478,11 @@ final class Tab: ObservableObject, Identifiable {
 
     private func loadAndVerify(_ url: URL, state: Any? = nil) {
         loadGeneration &+= 1
-        continueLoadAndVerify(url, state: state, view: web, token: loadGeneration, waited: false)
+        let token = loadGeneration, view = web
+        // Not before Shield's lists are in, at launch (see Shield.whenReady).
+        Shield.shared.whenReady { [weak self] in
+            self?.continueLoadAndVerify(url, state: state, view: view, token: token, waited: false)
+        }
     }
 
     private func continueLoadAndVerify(_ url: URL, state: Any?, view: PageView, token: UInt64, waited: Bool) {
