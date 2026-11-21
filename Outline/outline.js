@@ -745,15 +745,20 @@
   if (o.open && o.open.length) {
     o.open.forEach(function (id) { var n = section(id); if (n) open(n, depth, '', true); else line(gone(id)); });
   } else if (want) {
-    // Only what has the words, as see with words always did.
+    // Only what has the words. What a control is called comes first; where
+    // a link goes counts only when nothing is called that, so "search"
+    // finds the search box, not every search.worldcat.org reference.
+    var byAddress = [], named = 0;
     (function each(n) {
       if (n.type === 'heading' && n.label.toLowerCase().indexOf(want) >= 0) line('h' + n.level + ' "' + cut(n.label, 70) + '"' + where(n.el));
       n.controls.forEach(function (c) {
         var q = choice(c) && question(c);
-        if ((name(c) + ' ' + (c.href || '') + ' ' + (q ? q.text : '')).toLowerCase().indexOf(want) >= 0) item(c);
+        if ((name(c) + ' ' + (q ? q.text : '')).toLowerCase().indexOf(want) >= 0) { item(c); named++; }
+        else if (c.href && c.href.toLowerCase().indexOf(want) >= 0) byAddress.push(c);
       });
       n.kids.forEach(each);
     })(root);
+    if (!named) byAddress.forEach(function (c) { item(c); });
     if (!lines.length) line('nothing to press or fill in says "' + want + '": seek ID ' + want + ' looks in the words too');
   } else if (!o.outline && countAll(root) + attn.length <= most) {
     flat();

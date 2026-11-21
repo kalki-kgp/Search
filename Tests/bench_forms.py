@@ -14,6 +14,7 @@ to find every checkbox and radio, a check after each click that it had
 taken, and a hand to upload the files.
 """
 import json
+import re
 import sys
 import threading
 import time
@@ -66,8 +67,19 @@ PAGE = b"""<!doctype html><meta charset=utf-8><title>form</title>
 <div class=tile role=group tabindex=0 aria-label="Deselected asset photo.png" style="width:70px;height:70px;background:#ccc;position:relative">
   <div class=bar style="opacity:0;position:absolute;top:2px;right:2px"><a role=button aria-label="Select button" id=select><i class="material-icon-i material-icons-extended">radio_button_unchecked</i></a></div>
 </div>
+<form id=find role=search><input id=q aria-label="Search the site" autocomplete=off><button>Go</button></form>
+<p>Cited: <a href="https://search.worldcat.example/issn/0026-749X">0026-749X</a></p>
 <button id=add><i class="material-icon-i material-icons-extended">add_photo_alternate</i>Add</button>
 <script>
+  // Suggestions open under the field as it is typed into, put ahead of it
+  // in the page, as Wikipedia's do: what a fresh count would number first.
+  document.getElementById('q').addEventListener('input', function () {
+    var list = document.getElementById('hints') || document.createElement('ul');
+    list.id = 'hints'; list.setAttribute('role', 'listbox');
+    list.innerHTML = '<li role=option tabindex=0>' + this.value + ' fort</li><li role=option tabindex=0>' + this.value + ' tombs</li>';
+    document.body.insertBefore(list, document.body.firstChild);
+  });
+  document.getElementById('find').onsubmit = function (e) { e.preventDefault(); window.sent = document.getElementById('q').value; };
   // A page that only takes a hand's click: as a framework's own checkbox
   // does when it listens to the pointer, not to click().
   document.getElementById('stubborn').addEventListener('click', function (e) { if (!e.isTrusted) e.preventDefault(); });
@@ -118,8 +130,9 @@ def main():
              'button "Select button" (shows on hover, on "Deselected asset photo.png")' in page, page)
         t.ok("Play's own icon classes are left out of names too", 'button "Add"' in page and "add_photo_alternate" not in page, page)
         def number(text, words):
-            line = next((l for l in text.splitlines() if words in l), "")
-            return line.split("]")[0].lstrip(" [") if "]" in line else None
+            line = next((l for l in text.splitlines() if words in l and not l.startswith("!")), "")
+            m = re.match(r"\s*\[(\d+)\]", line)
+            return m.group(1) if m else None
         first = number(page, '"Advertising or marketing"')
         see(text="Save")
         again = number(see(max=200), '"Advertising or marketing"')
@@ -165,6 +178,19 @@ def main():
             t.ok("upload refuses a file that isn't there", False)
         except RuntimeError as e:
             t.ok("upload refuses a file that isn't there", "no file at" in str(e), e)
+
+        box = number(page, 'textbox "Search the site"')
+        r = sv.cmd({"do": "type", "id": tab, "selector": "@" + box, "text": "golconda"})
+        t.ok("typing that opens suggestions ahead of the field keeps the field's number",
+             number(see(text="Search the site"), "Search the site") == box, r)
+        r = sv.cmd({"do": "submit", "id": tab, "selector": "@" + box})
+        t.ok("…so submit with the number see gave works", ev("window.sent || ''") == "golconda", r)
+
+        found = see(text="search")
+        t.ok("see WORDS goes by what controls are called, not where links go",
+             'Search the site' in found and "0026-749X" not in found, found)
+        found = see(text="worldcat")
+        t.ok("…and by where links go when nothing is called that", "0026-749X" in found, found)
 
         sv.cmd({"do": "close", "id": tab})
     finally:
