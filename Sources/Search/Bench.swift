@@ -772,6 +772,52 @@ final class Bench {
                 answer(["tabsBefore": before, "tabsAfter": browser.tabs.count])
             }
 
+        case "rdrag":
+            // The right button held at X Y of a tab's page (its own points
+            // from the top left), drawn DX points sideways in `steps` moves
+            // `ms` apart (and `dy` down), and let go, handed to its view as AppKit would.
+            // Answers with each disc the tab showed and where the page went.
+            // Only on a SEARCH_PROBE run.
+            guard Store.testing else { answer(["error": "rdrag only works on a --test run"]); return }
+            guard let tab = find(request, in: browser), let x = request["x"] as? Double, let y = request["y"] as? Double,
+                  let dx = request["dx"] as? Double
+            else { answer(missing(request)); return }
+            house(tab)
+            let web = tab.web
+            let steps = max(1, request["steps"] as? Int ?? 12)
+            let gap = Double(max(1, request["ms"] as? Int ?? 16)) / 1000
+            let dy = request["dy"] as? Double ?? 0
+            let before = tab.address?.absoluteString ?? ""
+            func event(_ type: NSEvent.EventType, _ part: Double) -> NSEvent? {
+                let down = y + dy * part
+                let inView = NSPoint(x: x + dx * part, y: web.isFlipped ? down : web.bounds.height - down)
+                return NSEvent.mouseEvent(
+                    with: type, location: web.convert(inView, to: nil), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: web.window?.windowNumber ?? 0,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: type == .rightMouseUp ? 0 : 1
+                )
+            }
+            var discs: [String] = []
+            func note() {
+                guard let p = tab.pull else { return }
+                let line = "\(p.back ? "back" : "forward") \(Int(p.travel))\(p.armed ? " armed" : "")\(p.going ? " going" : "")"
+                if discs.last != line { discs.append(line) }
+            }
+            if let down = event(.rightMouseDown, 0) { web.rightMouseDown(with: down) }
+            for i in 1...steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + gap * Double(i)) {
+                    if let drag = event(.rightMouseDragged, Double(i) / Double(steps)) { web.rightMouseDragged(with: drag) }
+                    note()
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + gap * Double(steps + 1)) {
+                if let up = event(.rightMouseUp, 1) { web.rightMouseUp(with: up) }
+                note()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    answer(["discs": discs, "before": before, "after": tab.address?.absoluteString ?? ""])
+                }
+            }
+
         case "linkmenu":
             // A right-click at X Y of a tab's page (its own points from the
             // top left), and the item named "pick" chosen from the menu that
