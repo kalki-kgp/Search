@@ -25,7 +25,6 @@ struct Veil: Codable, Identifiable, Equatable {
 @MainActor
 final class Curtain: ObservableObject {
     @Published private(set) var byHost: [String: [Veil]] = [:]
-    private var saving = false
 
     init() { load() }
 
@@ -92,21 +91,8 @@ final class Curtain: ObservableObject {
     }
 
     private func save() {
-        guard !saving else { return }
-        saving = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self else { return }
-            saving = false
-            let snapshot = byHost
-            let file = Curtain.file
-            DispatchQueue.global(qos: .utility).async {
-                guard let data = try? JSONEncoder().encode(snapshot) else { return }
-                try? FileManager.default.createDirectory(
-                    at: file.deletingLastPathComponent(), withIntermediateDirectories: true
-                )
-                try? data.write(to: file, options: .atomic)
-            }
-        }
+        let snapshot = byHost
+        Disk.write(Curtain.file) { try? JSONEncoder().encode(snapshot) }
     }
 }
 

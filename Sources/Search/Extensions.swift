@@ -525,8 +525,8 @@ final class Extensions: NSObject, ObservableObject {
     }
 
     private func save() {
-        try? FileManager.default.createDirectory(at: Extensions.folder, withIntermediateDirectories: true)
-        try? JSONEncoder().encode(installed).write(to: Extensions.list, options: .atomic)
+        let snapshot = installed
+        Disk.write(Extensions.list) { try? JSONEncoder().encode(snapshot) }
     }
 
     // MARK: - installing
