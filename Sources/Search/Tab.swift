@@ -2387,6 +2387,85 @@ final class PageView: WKWebView {
         }
     }
 
+    // MARK: - the right button, held and drawn sideways
+
+    // A mouse has no two-finger swipe, and its side buttons are often
+    // spoken for (Mission Control, other windows). So the right button,
+    // held and drawn left, goes back, and drawn right, forward, as in Opera
+    // and Vivaldi. It is the trackpad's swipe in every other way: the same
+    // `sideways`, the same disc, the same reach to arm it and quick flick,
+    // the same taps under the hand.
+    //
+    // A Mac opens the page's menu as the right button goes down, and the
+    // menu then holds every move until it closes; a drag could never be
+    // seen. So the press is kept, and only if the mouse comes up without
+    // having gone anywhere is it handed to WebKit, press and release
+    // together, and the menu opens as it always did, a moment later.
+
+    /// The right button's press, kept until it is a click or a drag.
+    private var rightDown: NSEvent?
+    /// This swipe is the mouse's: no page to ask, and no list to hold for,
+    /// which would need the fingers to move up and down.
+    private var byMouse = false
+    /// How far the mouse may wander and the press still be a click.
+    private static let still: CGFloat = 6
+
+    override func rightMouseDown(with event: NSEvent) {
+        onTouch?()
+        rightDown = event
+        byMouse = true
+        sideways = 0
+        axis = nil
+        free = true
+        asked = nil
+        spent = false
+        armedNow = false
+        showing = false
+        holding?.cancel()
+        holding = nil
+        stops = nil
+        items = []
+        pulls += 1
+        if going {
+            going = false
+            onPull?(nil)
+        }
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        guard let down = rightDown else { return super.rightMouseDragged(with: event) }
+        let dx = event.locationInWindow.x - down.locationInWindow.x
+        let dy = event.locationInWindow.y - down.locationInWindow.y
+        guard !spent else { return }
+        if axis == nil {
+            guard abs(dx) + abs(dy) > PageView.still else { return }
+            axis = abs(dx) > abs(dy) * 1.3 ? .across : .down
+            back = dx < 0
+            if axis == .down || (back ? !canGoBack : !canGoForward) {
+                spent = true
+                return
+            }
+            asked = Date()
+        }
+        // Drawn left is back, as the trackpad's fingers drawn right are.
+        sideways = -dx
+        tell()
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        guard let down = rightDown else { return super.rightMouseUp(with: event) }
+        rightDown = nil
+        defer { byMouse = false }
+        if axis == nil {
+            // Never went anywhere: a right-click, the page's and its menu's.
+            spent = true
+            super.rightMouseDown(with: down)
+            super.rightMouseUp(with: event)
+            return
+        }
+        if axis == .across { release() } else { settle(nil) }
+    }
+
     /// The page has said whether the swipe would scroll something.
     func answer(free yes: Bool) {
         guard axis != .down, !spent else { return }
@@ -2422,7 +2501,7 @@ final class PageView: WKWebView {
         }
 
         let armed = travel >= PageView.arm
-        if PageView.holdsHistory, stops == nil, armed != armedNow {
+        if PageView.holdsHistory, !byMouse, stops == nil, armed != armedNow {
             holding?.cancel()
             holding = nil
             if armed {
