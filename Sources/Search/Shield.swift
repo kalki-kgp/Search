@@ -254,7 +254,7 @@ final class Shield: ObservableObject {
         guard let sites, let site = sites.site(for: host) else { return out }
         if !site.calls.isEmpty {
             let library = site.deps.compactMap { sites.library($0) }.joined(separator: "\n")
-            let host = Shield.jsString(host)
+            let host = JS.literal(host)
             // Every frame of the site, not frames of other sites inside it.
             let source = """
             (function () {
@@ -407,12 +407,6 @@ final class Shield: ObservableObject {
             }
         }
         return ["f": forced, "p": protected]
-    }
-
-    private static func jsString(_ text: String) -> String {
-        let data = try? JSONSerialization.data(withJSONObject: [text])
-        let array = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
-        return String(array.dropFirst().dropLast())
     }
 
     // MARK: - refreshing

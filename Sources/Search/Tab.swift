@@ -1105,7 +1105,7 @@ final class Tab: ObservableObject, Identifiable {
     /// when this was offered, are gone by the time it actually runs.
     func fill(user: String, password: String, done: ((Bool) -> Void)? = nil) {
         web.evaluateInSearch(
-            "window.__officeForms && window.__officeForms.fill(`\(escape(user))`, `\(escape(password))`)"
+            "window.__officeForms && window.__officeForms.fill(\(JS.literal(user)), \(JS.literal(password)))"
         ) { result in
             done?((result as? Bool) ?? false)
         }
@@ -1118,19 +1118,14 @@ final class Tab: ObservableObject, Identifiable {
     /// Show one hidden thing while the pointer rests on its row in the list.
     func peek(_ selector: String, keeping css: String) {
         web.evaluateInSearch(
-            "window.__officeVeil && window.__officeVeil.peek(`\(escape(css))`, `\(escape(selector))`)"
+            "window.__officeVeil && window.__officeVeil.peek(\(JS.literal(css)), \(JS.literal(selector)))"
         )
     }
 
     func unpeek(_ css: String) {
-        web.evaluateInSearch("window.__officeVeil && window.__officeVeil.unpeek(`\(escape(css))`)")
+        web.evaluateInSearch("window.__officeVeil && window.__officeVeil.unpeek(\(JS.literal(css)))")
     }
 
-    private func escape(_ text: String) -> String {
-        text.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "`", with: "\\`")
-            .replacingOccurrences(of: "$", with: "\\$")
-    }
     func pickingEnded() { onPickEnd?(self) }
     func pickingFailed(_ reason: String) { onPickTrouble?(self, reason) }
 
@@ -2600,5 +2595,15 @@ extension WKWebView {
         evaluateJavaScript(js, in: nil, in: Web.world) { result in
             then?(try? result.get())
         }
+    }
+}
+
+enum JS {
+    /// A Swift string written as a JavaScript string literal, quotes and
+    /// all, safe to put in a script whatever it holds: JSON's own escaping.
+    static func literal(_ text: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: [text])
+        let array = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        return String(array.dropFirst().dropLast())
     }
 }

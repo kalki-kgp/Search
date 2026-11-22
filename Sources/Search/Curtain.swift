@@ -127,10 +127,6 @@ enum Veiling {
     /// A stylesheet put in before the document has a body, so nothing is ever
     /// seen arriving and then leaving.
     static func style(_ css: String) -> String {
-        let escaped = css
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "`", with: "\\`")
-            .replacingOccurrences(of: "$", with: "\\$")
         return """
         (function () {
           var sheet = document.getElementById('office-veil');
@@ -139,7 +135,7 @@ enum Veiling {
             sheet.id = 'office-veil';
             (document.head || document.documentElement).appendChild(sheet);
           }
-          sheet.textContent = `\(escaped)`;
+          sheet.textContent = \(JS.literal(css));
         })();
         """
     }

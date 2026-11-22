@@ -141,12 +141,10 @@ enum Speed {
             .flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) else { return nil }
         let css = Bundle.main.url(forResource: "speed", withExtension: "css")
             .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
-        let style = (try? JSONSerialization.data(withJSONObject: [css], options: .fragmentsAllowed))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
         return """
         (function () {
           var s = document.createElement('style');
-          s.textContent = \(style)[0];
+          s.textContent = \(JS.literal(css));
           (document.head || document.documentElement).appendChild(s);
         })();
         (function (requestIdleCallback) {

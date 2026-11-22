@@ -3457,7 +3457,7 @@ final class Bench {
     }
 
     private static func locate(_ selector: String) -> String {
-        let sel = (try? JSONSerialization.data(withJSONObject: [selector])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        let sel = JS.literal(selector)
         return """
         (function () {
           var s = \(sel), el = null;
@@ -3545,8 +3545,8 @@ final class Bench {
     /// through the field's own setter and fires the events a keystroke
     /// would, the same as the password filler, so frameworks notice.
     private static func act(_ verb: String, selector: String, text: String) -> String {
-        let sel = (try? JSONSerialization.data(withJSONObject: [selector])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
-        let txt = (try? JSONSerialization.data(withJSONObject: [text])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        let sel = JS.literal(selector)
+        let txt = JS.literal(text)
         return """
         (function () {
           var s = \(sel);
