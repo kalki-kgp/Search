@@ -1868,10 +1868,8 @@ private struct ExtensionActions: View {
 func extensionMenuPicture() -> NSBitmapImageRep? {
     let host = NSHostingView(rootView: ExtensionMenu(extensions: .shared))
     host.frame = NSRect(origin: .zero, size: host.fittingSize)
-    let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-    window.appearance = NSApp.effectiveAppearance
-    window.contentView = host
-    host.layoutSubtreeIfNeeded()
+    let window = Offstage.window(for: host)
+    defer { withExtendedLifetime(window) {} }
     guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
     host.cacheDisplay(in: host.bounds, to: picture)
     return picture
