@@ -264,21 +264,17 @@ enum Chromium {
             guard FileManager.default.fileExists(atPath: icons.path),
                   let copy = try? Snapshot(of: icons)
             else { continue }
-            let temp = copy.file
-            defer { withExtendedLifetime(copy) {} }
 
-            var db: OpaquePointer?
-            guard sqlite3_open_v2(temp.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { continue }
-            defer { sqlite3_close(db) }
             let sql = """
             SELECT b.image_data FROM icon_mapping m
             JOIN favicon_bitmaps b ON b.icon_id = m.icon_id
             WHERE m.page_url = ? AND b.width BETWEEN 16 AND 256
             ORDER BY b.width DESC LIMIT 1
             """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { continue }
-            defer { sqlite3_finalize(statement) }
+            guard let query = Query(copy, sql) else { continue }
+            // Kept to the end: the copy, the database and the statement go with it.
+            defer { withExtendedLifetime(query) {} }
+            let statement = query.statement
 
             for (host, url) in wanted where out[host] == nil {
                 var doors = [url.absoluteString]
@@ -322,26 +318,16 @@ enum Chromium {
 
     private static func placeRows(in file: URL, limit: Int) throws -> [Place] {
         let copy = try Snapshot(of: file)
-        let temp = copy.file
-        // Kept to the end: the copy goes with it, and SQLite is reading it.
-        defer { withExtendedLifetime(copy) {} }
-
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(temp.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_close(db) }
 
         let sql = """
         SELECT url, title, visit_count, last_visit_time FROM urls
         WHERE hidden = 0 AND visit_count > 0
         ORDER BY last_visit_time DESC LIMIT \(limit)
         """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_finalize(statement) }
+        guard let query = Query(copy, sql) else { throw Trouble.unreadable }
+        // Kept to the end: the copy, the database and the statement go with it.
+        defer { withExtendedLifetime(query) {} }
+        let statement = query.statement
 
         var out: [Place] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -387,13 +373,10 @@ enum Chromium {
     /// isn't there or won't answer.
     static func count(_ sql: String, in file: URL) -> Int {
         guard FileManager.default.fileExists(atPath: file.path), let copy = try? Snapshot(of: file) else { return 0 }
-        defer { withExtendedLifetime(copy) {} }
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(copy.file.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { return 0 }
-        defer { sqlite3_close(db) }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return 0 }
-        defer { sqlite3_finalize(statement) }
+        guard let query = Query(copy, sql) else { return 0 }
+        // Kept to the end: the copy, the database and the statement go with it.
+        defer { withExtendedLifetime(query) {} }
+        let statement = query.statement
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
 
@@ -537,25 +520,15 @@ enum Chromium {
     private static func rows(in file: URL) throws -> [Row] {
         // A copy, next to nothing the other browser is watching.
         let copy = try Snapshot(of: file)
-        let temp = copy.file
-        // Kept to the end: the copy goes with it, and SQLite is reading it.
-        defer { withExtendedLifetime(copy) {} }
-
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(temp.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_close(db) }
 
         let sql = """
         SELECT origin_url, username_value, password_value, blacklisted_by_user, date_last_used
         FROM logins
         """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_finalize(statement) }
+        guard let query = Query(copy, sql) else { throw Trouble.unreadable }
+        // Kept to the end: the copy, the database and the statement go with it.
+        defer { withExtendedLifetime(query) {} }
+        let statement = query.statement
 
         var out: [Row] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -717,14 +690,6 @@ enum Mozilla {
     /// Other and Mobile as folders — the same order Chromium's come in.
     private static func bookmarkNodes(in file: URL) throws -> [Bookmark] {
         let copy = try Snapshot(of: file)
-        let temp = copy.file
-        defer { withExtendedLifetime(copy) {} }
-
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(temp.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_close(db) }
 
         let sql = """
         SELECT b.id, b.type, b.parent, b.title, p.url, b.guid
@@ -733,11 +698,10 @@ enum Mozilla {
         WHERE b.type IN (1, 2)
         ORDER BY b.position ASC
         """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_finalize(statement) }
+        guard let query = Query(copy, sql) else { throw Trouble.unreadable }
+        // Kept to the end: the copy, the database and the statement go with it.
+        defer { withExtendedLifetime(query) {} }
+        let statement = query.statement
 
         var items: [Raw] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -809,12 +773,7 @@ enum Mozilla {
             guard FileManager.default.fileExists(atPath: favicons.path),
                   let copy = try? Snapshot(of: favicons)
             else { continue }
-            let temp = copy.file
-            defer { withExtendedLifetime(copy) {} }
 
-            var db: OpaquePointer?
-            guard sqlite3_open_v2(temp.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { continue }
-            defer { sqlite3_close(db) }
             let sql = """
             SELECT i.data FROM moz_pages_w_icons p
             JOIN moz_icons_to_pages m ON m.page_id = p.id
@@ -822,9 +781,10 @@ enum Mozilla {
             WHERE p.page_url = ? AND i.data IS NOT NULL
             ORDER BY i.width DESC LIMIT 1
             """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { continue }
-            defer { sqlite3_finalize(statement) }
+            guard let query = Query(copy, sql) else { continue }
+            // Kept to the end: the copy, the database and the statement go with it.
+            defer { withExtendedLifetime(query) {} }
+            let statement = query.statement
 
             for (host, url) in wanted where out[host] == nil {
                 var doors = [url.absoluteString]
@@ -859,25 +819,16 @@ enum Mozilla {
 
     private static func placeRows(in file: URL, limit: Int) throws -> [Chromium.Place] {
         let copy = try Snapshot(of: file)
-        let temp = copy.file
-        defer { withExtendedLifetime(copy) {} }
-
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(temp.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_close(db) }
 
         let sql = """
         SELECT url, title, visit_count, last_visit_date FROM moz_places
         WHERE hidden = 0 AND visit_count > 0 AND last_visit_date IS NOT NULL
         ORDER BY last_visit_date DESC LIMIT \(limit)
         """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw Trouble.unreadable
-        }
-        defer { sqlite3_finalize(statement) }
+        guard let query = Query(copy, sql) else { throw Trouble.unreadable }
+        // Kept to the end: the copy, the database and the statement go with it.
+        defer { withExtendedLifetime(query) {} }
+        let statement = query.statement
 
         var out: [Chromium.Place] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -1386,4 +1337,33 @@ final class Snapshot {
     }
 
     deinit { try? FileManager.default.removeItem(at: folder) }
+}
+
+/// One query on a snapshot, opened read-only: the copy, the database and
+/// the statement, closed and gone together. Nil when either won't open.
+final class Query {
+    let statement: OpaquePointer
+    private let db: OpaquePointer
+    private let copy: Snapshot
+
+    init?(_ copy: Snapshot, _ sql: String) {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(copy.file.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+            sqlite3_close(db)
+            return nil
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            sqlite3_close(db)
+            return nil
+        }
+        self.copy = copy
+        self.db = db
+        self.statement = statement
+    }
+
+    deinit {
+        sqlite3_finalize(statement)
+        sqlite3_close(db)
+    }
 }
