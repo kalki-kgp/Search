@@ -51,17 +51,6 @@ setInterval(() => {
 }
 
 
-def probe_copy():
-    """build/Search.app under a bundle id of its own, signed ad hoc."""
-    app = work / "Search.app"
-    shutil.copytree(Path(sv.ROOT, "build", "Search.app"), app, symlinks=True)
-    subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Set :CFBundleIdentifier {BUNDLE}", str(app / "Contents/Info.plist")], check=True)
-    (app / "Contents/embedded.provisionprofile").unlink(missing_ok=True)
-    subprocess.run(["codesign", "-f", "-s", "-", "--entitlements", str(Path(sv.ROOT, "Search.entitlements")), "--deep", str(app)],
-                   check=True, capture_output=True)
-    return str(app)
-
-
 def stored(tid):
     key = f"__r{int(time.time() * 1000)}"
     sv.ev(tid, f"window.{key}=null;chrome.storage.local.get(null).then(v=>window.{key}=JSON.stringify(v));1")
@@ -79,7 +68,7 @@ def main():
     folder.mkdir()
     for name, body in FILES.items():
         (folder / name).write_text(body)
-    sv.APP = probe_copy()
+    sv.APP = sv.probe_copy(work, BUNDLE)
     try:
         sv.setup()
         sv.launch()

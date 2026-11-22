@@ -72,17 +72,6 @@ if (navigator.serviceWorker.controller) {
 }
 
 
-def probe_copy():
-    """build/Search.app under a bundle id of its own, signed ad hoc."""
-    app = work / "Search.app"
-    shutil.copytree(Path(sv.ROOT, "build", "Search.app"), app, symlinks=True)
-    subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Set :CFBundleIdentifier {BUNDLE}", str(app / "Contents/Info.plist")], check=True)
-    (app / "Contents/embedded.provisionprofile").unlink(missing_ok=True)
-    subprocess.run(["codesign", "-f", "-s", "-", "--entitlements", str(Path(sv.ROOT, "Search.entitlements")), "--deep", str(app)],
-                   check=True, capture_output=True)
-    return str(app)
-
-
 def result(tid, within=6):
     end = time.time() + within
     value = None
@@ -100,7 +89,7 @@ def main():
     folder.mkdir()
     for name, body in FILES.items():
         (folder / name).write_text(body)
-    sv.APP = probe_copy()
+    sv.APP = sv.probe_copy(work, BUNDLE)
     try:
         sv.setup()
         sv.launch()

@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -169,6 +170,22 @@ class T:
         print(f"{self.passed} passed, {self.failed} failed")
 def finish():
     quit(); time.sleep(0.5); wipe()
+
+
+def press(code, chars, mods=()):
+    return cmd({"do": "press", "code": code, "chars": chars, "mods": list(mods)})
+
+
+def probe_copy(work, bundle):
+    """build/Search.app copied into `work` under a bundle id of its own,
+    signed ad hoc, so a test can give it settings and data of its own."""
+    app = Path(work) / "Search.app"
+    shutil.copytree(Path(ROOT, "build", "Search.app"), app, symlinks=True)
+    subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Set :CFBundleIdentifier {bundle}", str(app / "Contents/Info.plist")], check=True)
+    (app / "Contents/embedded.provisionprofile").unlink(missing_ok=True)
+    subprocess.run(["codesign", "-f", "-s", "-", "--entitlements", str(Path(ROOT, "Search.entitlements")), "--deep", str(app)],
+                   check=True, capture_output=True)
+    return str(app)
 
 
 def frames(st): return {f["id"]: f for f in st["paneFrames"]}

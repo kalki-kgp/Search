@@ -24,10 +24,6 @@ CMD_T, CMD_L, CMD_F, ESC = 17, 37, 3, 53
 LETTERS = {"a": 0, "b": 11, "c": 8, "h": 4}
 
 
-def press(code, chars, mods=()):
-    return sv.cmd({"do": "press", "code": code, "chars": chars, "mods": list(mods)})
-
-
 def fire(req):
     """A request sent without waiting for its answer: the next can follow
     before this one is done, as keys from a hand do. The socket is returned
@@ -55,10 +51,10 @@ def field():
 
 def new_tab_then(text="h"):
     """⌘T, then the letters: back come where the keys were and what landed."""
-    press(CMD_T, "t", ["cmd"])
+    sv.press(CMD_T, "t", ["cmd"])
     time.sleep(0.3)
     for ch in text:
-        press(LETTERS[ch], ch)
+        sv.press(LETTERS[ch], ch)
     time.sleep(0.2)
     return field()
 
@@ -68,7 +64,7 @@ def landed(f, text="h"):
 
 
 def back_to(page):
-    press(ESC, "\x1b")
+    sv.press(ESC, "\x1b")
     time.sleep(0.1)
     sv.sp("select", id=page)
     time.sleep(0.3)
@@ -96,12 +92,12 @@ def main():
         every(t, "Split View on: ⌘T from a page, then a letter", 8, from_page)
 
         def from_raised_field():
-            press(CMD_L, "l", ["cmd"]); time.sleep(0.3)
+            sv.press(CMD_L, "l", ["cmd"]); time.sleep(0.3)
             f = new_tab_then(); back_to(a); return f
         every(t, "⌘L over the page, then ⌘T, then a letter", 12, from_raised_field)
 
         def from_find():
-            press(CMD_F, "f", ["cmd"]); time.sleep(0.3)
+            sv.press(CMD_F, "f", ["cmd"]); time.sleep(0.3)
             f = new_tab_then(); back_to(a); return f
         every(t, "Find open on the page, then ⌘T, then a letter", 4, from_find)
 
@@ -117,8 +113,8 @@ def main():
 
         # ⌘T held: the second press, a repeat, lands on the blank tab just
         # opened and keeps the field, with one blank tab and not two.
-        press(CMD_T, "t", ["cmd"]); press(CMD_T, "t", ["cmd", "repeat"]); time.sleep(0.3)
-        press(LETTERS["h"], "h"); time.sleep(0.2)
+        sv.press(CMD_T, "t", ["cmd"]); sv.press(CMD_T, "t", ["cmd", "repeat"]); time.sleep(0.3)
+        sv.press(LETTERS["h"], "h"); time.sleep(0.2)
         f = field(); blanks = [x for x in sv.sp("state")["tabs"] if not x["url"]]
         t.ok("⌘T held: one blank tab, the field with the keys", landed(f) and len(blanks) == 1, (f, len(blanks)))
         back_to(a)

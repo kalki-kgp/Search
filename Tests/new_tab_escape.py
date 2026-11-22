@@ -26,10 +26,6 @@ CMD_T, ESC = 17, 53
 LETTERS = {"h": 4, "e": 14, "l": 37, "o": 31}
 
 
-def press(code, chars, mods=()):
-    return sv.cmd({"do": "press", "code": code, "chars": chars, "mods": list(mods)})
-
-
 def typed(): return sv.cmd({"do": "sitesearch", "action": "state"})["typed"]
 
 
@@ -40,7 +36,7 @@ def front():
 
 def word(text="hello"):
     for ch in text:
-        press(LETTERS[ch], ch)
+        sv.press(LETTERS[ch], ch)
     time.sleep(0.3)
 
 
@@ -56,38 +52,38 @@ def main():
         sv.sp("select", id=a); time.sleep(0.4)
         count = len(sv.sp("state")["tabs"])
 
-        press(CMD_T, "t", ["cmd"]); time.sleep(0.5)
+        sv.press(CMD_T, "t", ["cmd"]); time.sleep(0.5)
         word()
         f, st = front()
         t.ok("⌘T and a word: a new tab with the word typed", f and f.get("blank") and typed() == "hello", (f, typed()))
-        press(ESC, "\x1b"); time.sleep(0.4)
+        sv.press(ESC, "\x1b"); time.sleep(0.4)
         f, st = front()
         t.ok("first Escape clears the word", typed() == "", typed())
         t.ok("and the new tab stays in front", f and f.get("blank") and len(st["tabs"]) == count + 1, (f, len(st["tabs"])))
-        press(ESC, "\x1b"); time.sleep(0.5)
+        sv.press(ESC, "\x1b"); time.sleep(0.5)
         f, st = front()
         t.ok("second Escape closes the unused tab", len(st["tabs"]) == count, len(st["tabs"]))
         t.ok("and the page is back in front", f and f["id"] == a, f)
 
-        press(CMD_T, "t", ["cmd"]); time.sleep(0.5)
+        sv.press(CMD_T, "t", ["cmd"]); time.sleep(0.5)
         f, st = front()
         t.ok("⌘T again: a new tab", f and f.get("blank") and len(st["tabs"]) == count + 1, f)
-        press(ESC, "\x1b"); time.sleep(0.5)
+        sv.press(ESC, "\x1b"); time.sleep(0.5)
         f, st = front()
         t.ok("nothing typed: one Escape closes it", len(st["tabs"]) == count and f and f["id"] == a, (f, len(st["tabs"])))
 
         # The only tab, empty.
-        press(CMD_T, "t", ["cmd"]); time.sleep(0.5)
+        sv.press(CMD_T, "t", ["cmd"]); time.sleep(0.5)
         sv.sp("close", id=a); time.sleep(0.5)
         f, st = front()
         t.ok("the only tab is an empty one", len(st["tabs"]) == 1 and f and f.get("blank"), st["tabs"])
-        press(CMD_T, "t", ["cmd"]); time.sleep(0.4)
+        sv.press(CMD_T, "t", ["cmd"]); time.sleep(0.4)
         word("hel")
         t.ok("a word typed in it", typed() == "hel", typed())
-        press(ESC, "\x1b"); time.sleep(0.4)
+        sv.press(ESC, "\x1b"); time.sleep(0.4)
         f, st = front()
         t.ok("Escape clears it, the tab stays", typed() == "" and len(st["tabs"]) == 1 and f.get("blank"), (typed(), st["tabs"]))
-        press(ESC, "\x1b"); time.sleep(0.4)
+        sv.press(ESC, "\x1b"); time.sleep(0.4)
         f, st = front()
         t.ok("Escape again leaves the only tab", len(st["tabs"]) == 1 and f and f.get("blank"), st["tabs"])
     finally:
