@@ -682,7 +682,7 @@ final class Tab: ObservableObject, Identifiable {
     var label: String {
         if let name, !name.isEmpty { return name }
         if popup, let host = address?.host(), !host.isEmpty {
-            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            return host.withoutWWW
         }
         if !title.isEmpty { return title }
         if let address { return Address.pretty(address) }
@@ -1057,7 +1057,7 @@ final class Tab: ObservableObject, Identifiable {
         // later it may be somewhere else entirely, and that is not where
         // the password belongs.
         guard let host = pageAddress?.host()?.lowercased() else { return }
-        let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let bare = host.withoutWWW
         sent = (bare, user, password, pageAddress?.scheme?.lowercased() == "http", Date())
     }
 

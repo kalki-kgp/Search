@@ -264,7 +264,7 @@ enum Vault {
         guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               let host = url.host()?.lowercased()
         else { return "" }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        return host.withoutWWW
     }
 
     // MARK: - taking in an export

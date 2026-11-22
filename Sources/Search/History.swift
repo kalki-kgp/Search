@@ -133,7 +133,7 @@ final class History: ObservableObject {
         let address = Address.editable(shownURL)
         let searchable = stripped(address)
         let host = (shownURL.host()?.lowercased() ?? "")
-        let bareHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let bareHost = host.withoutWWW
         let path = shownURL.path()
         return PageText(
             address: address,
@@ -148,7 +148,7 @@ final class History: ObservableObject {
         for scheme in ["https://", "http://"] where text.hasPrefix(scheme) {
             text = String(text.dropFirst(scheme.count))
         }
-        if text.hasPrefix("www.") { text = String(text.dropFirst(4)) }
+        text = text.withoutWWW
         return text
     }
 
@@ -561,7 +561,7 @@ final class History: ObservableObject {
                   !(url.path().isEmpty || url.path() == "/"),
                   let home = homepage(of: url)
             else { continue }
-            let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            let bare = host.withoutWWW
             doors[bare, default: [:]][identity(for: home), default: 0] += visit.count
         }
         for (key, credit) in visits {

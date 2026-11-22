@@ -850,7 +850,7 @@ final class ShieldRelay: NSObject, WKScriptMessageHandlerWithReply {
                 classes: body["c"] as? [String] ?? [],
                 ids: body["i"] as? [String] ?? [],
                 frame: message.frameInfo.securityOrigin.host.lowercased(),
-                page: page.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 }
+                page: page.map(\.withoutWWW)
             ), nil)
         }
     }

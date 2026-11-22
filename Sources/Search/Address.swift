@@ -130,8 +130,15 @@ enum Address {
     /// with the parts nobody reads taken off.
     static func pretty(_ url: URL) -> String {
         guard let host = url.host() else { return url.absoluteString }
-        let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let bare = host.withoutWWW
         let path = url.path()
         return path.isEmpty || path == "/" ? bare : bare + path
     }
+}
+
+extension String {
+    /// Without a leading "www.": what a person would call the site. Only
+    /// the exact lowercase prefix, as every caller had it; a host is
+    /// lowercased first where that matters.
+    var withoutWWW: String { hasPrefix("www.") ? String(dropFirst(4)) : self }
 }

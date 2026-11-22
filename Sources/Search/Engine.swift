@@ -50,7 +50,7 @@ enum Engine: String, CaseIterable, Identifiable {
     /// would call the site if you asked them.
     static func bareHost(of template: String) -> String? {
         guard let host = host(of: template) else { return nil }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        return host.withoutWWW
     }
 
     static func url(for text: String, template: String) -> URL? {
