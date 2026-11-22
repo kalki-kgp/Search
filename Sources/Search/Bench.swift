@@ -2027,15 +2027,9 @@ final class Bench {
             stage.removeFromSuperview()
             stage.frame = NSRect(origin: .zero, size: place.size)
             hall.contentView?.addSubview(stage)
-            let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-            typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-            if web.responds(to: occlusion) {
-                unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
-            }
+            Unlisted.set("_setWindowOcclusionDetectionEnabled:", on: web, to: false)
             func giveBack() {
-                if web.responds(to: occlusion) {
-                    unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, true)
-                }
+                Unlisted.set("_setWindowOcclusionDetectionEnabled:", on: web, to: true)
                 stage.removeFromSuperview()
                 stage.frame = place
                 if let after, after.superview === home {
@@ -3309,10 +3303,7 @@ final class Bench {
     /// nothing, and runs little, for a page it thinks nobody sees. This one
     /// is told it is seen.
     static func uncover(_ web: WKWebView) {
-        let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-        guard web.responds(to: occlusion) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
+        Unlisted.set("_setWindowOcclusionDetectionEnabled:", on: web, to: false)
     }
 
     private func makeRoom() -> NSWindow {

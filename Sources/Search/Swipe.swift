@@ -45,13 +45,10 @@ enum Swipe {
     /// wheel event listener (WebKit bug rdar://137757208). Native edge
     /// configuration avoids touching the page's styling and prevents the bug.
     static func calm(_ web: WKWebView) {
-        let set = NSSelectorFromString("_setRubberBandingEnabled:")
-        guard web.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, UInt) -> Void
         // _WKRectEdge: one bit per CGRectEdge (_WKRectEdge.h) — the edges
         // that keep their bounce. Left and right only.
         let left: UInt = 1 << 0, right: UInt = 1 << 2   // CGRectMinXEdge, CGRectMaxXEdge
-        unsafeBitCast(web.method(for: set), to: Setter.self)(web, set, left | right)
+        Unlisted.set("_setRubberBandingEnabled:", on: web, to: left | right)
     }
 
     /// Whether a sideways swipe here would scroll something. Said once per

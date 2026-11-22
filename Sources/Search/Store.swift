@@ -72,10 +72,7 @@ enum Store {
     /// "Prevent cross-site tracking" is the same one.
     @MainActor static func followSignIns(_ store: WKWebsiteDataStore) {
         followCookies(store)
-        let set = NSSelectorFromString("_setResourceLoadStatisticsEnabled:")
-        guard store.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(store.method(for: set), to: Setter.self)(store, set, !keepsSignIns)
+        Unlisted.set("_setResourceLoadStatisticsEnabled:", on: store, to: !keepsSignIns)
     }
 
     /// Off, the store's cookie policy is Always too: left as it was, it took
@@ -219,5 +216,32 @@ enum Disk {
     /// Everything asked for so far, written — for the way out.
     static func drain() {
         queue.sync {}
+    }
+}
+
+/// WebKit's setters outside its public headers, called only when this
+/// WebKit answers to the name, so a later one without it carries on as if
+/// it had never been asked. Says whether it was there.
+enum Unlisted {
+    @discardableResult
+    static func set(_ name: String, on object: NSObject, to value: Bool) -> Bool {
+        call(name, on: object) { (f: @convention(c) (AnyObject, Selector, Bool) -> Void, s) in f(object, s, value) }
+    }
+
+    @discardableResult
+    static func set(_ name: String, on object: NSObject, to value: Int) -> Bool {
+        call(name, on: object) { (f: @convention(c) (AnyObject, Selector, Int) -> Void, s) in f(object, s, value) }
+    }
+
+    @discardableResult
+    static func set(_ name: String, on object: NSObject, to value: UInt) -> Bool {
+        call(name, on: object) { (f: @convention(c) (AnyObject, Selector, UInt) -> Void, s) in f(object, s, value) }
+    }
+
+    private static func call<F>(_ name: String, on object: NSObject, _ run: (F, Selector) -> Void) -> Bool {
+        let selector = NSSelectorFromString(name)
+        guard object.responds(to: selector) else { return false }
+        run(unsafeBitCast(object.method(for: selector), to: F.self), selector)
+        return true
     }
 }

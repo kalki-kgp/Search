@@ -144,20 +144,14 @@ enum Web {
     /// isInspectable alone only lets Safari's Develop menu reach the page.
     /// The name is outside the public framework, so it is asked first.
     static func inspector(_ preferences: WKPreferences, on: Bool = true) {
-        let set = NSSelectorFromString("_setDeveloperExtrasEnabled:")
-        guard preferences.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, on)
+        Unlisted.set("_setDeveloperExtrasEnabled:", on: preferences, to: on)
     }
 
     /// A test run's pretend camera and microphone, so the capture corner can
     /// be tried without the real ones (`defaults write … capture.mock`).
     static func mockCapture(_ preferences: WKPreferences) {
         guard Store.world != nil, Store.settings.bool(forKey: "capture.mock") else { return }
-        let set = NSSelectorFromString("_setMockCaptureDevicesEnabled:")
-        guard preferences.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, true)
+        Unlisted.set("_setMockCaptureDevicesEnabled:", on: preferences, to: true)
     }
 }
 
@@ -236,10 +230,7 @@ enum Autoplay {
     static func apply(to preferences: WKWebpagePreferences, for url: URL, shy: Bool) {
         guard !shy, let host = url.host(), allowed(host),
               !Store.settings.bool(forKey: Preferences.waitsKey) else { return }
-        let set = NSSelectorFromString("_setAutoplayPolicy:")
-        guard preferences.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Int) -> Void
-        unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, 1)
+        Unlisted.set("_setAutoplayPolicy:", on: preferences, to: 1)
     }
 }
 
@@ -2156,10 +2147,7 @@ final class PageView: WKWebView {
     /// public framework, so it is asked whether it answers to them first. One
     /// that doesn't gets a view shown straight away, as before.
     func holdForFirstFrame() {
-        let observe = NSSelectorFromString("_setObservedRenderingProgressEvents:")
-        guard responds(to: observe) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, UInt) -> Void
-        unsafeBitCast(method(for: observe), to: Setter.self)(self, observe, PageView.firstFrame)
+        guard Unlisted.set("_setObservedRenderingProgressEvents:", on: self, to: PageView.firstFrame) else { return }
         unpainted = true
         alphaValue = 0
     }
