@@ -22,6 +22,10 @@
   'use strict';
   var most = Math.max(1, o.most || 60), depth = Math.max(1, o.depth || 1);
   var want = (o.want || '').toLowerCase().trim();
+  // Words match from the start of a word: "search" finds Search and
+  // searched, not research.
+  var wantRe = want ? new RegExp('(^|[^\\p{L}\\p{N}])' + want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu') : null;
+  function has(t) { return !!wantRe && wantRe.test(String(t || '')); }
   var high = innerHeight, wide = innerWidth;
   var PRESS = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[contenteditable=""],[contenteditable=true],' +
     '[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=switch],[role=textbox],[role=combobox],[role=option],[role=slider]';
@@ -299,16 +303,23 @@
   function shape(k) { return k.tagName + '.' + (k.classList[0] || ''); }
   function listy(el) {
     var kids = el.children;
-    if (kids.length < 5 || /^(SELECT|DATALIST|svg)$/.test(el.tagName)) return null;
-    var count = {}, order = [], top_ = 0;
+    // A paragraph full of links is writing, whatever its links say.
+    if (kids.length < 5 || /^(P|SELECT|DATALIST|svg)$/.test(el.tagName)) return null;
+    var count = {}, order = [], top_ = 0, paragraphs = 0;
     for (var i = 0; i < kids.length; i++) {
       // Only what is shown: an app shell keeps dozens of hidden dialogs alike.
       if (SKIP.test(kids[i].tagName) || shown(kids[i]) !== 1) continue;
       var s = shape(kids[i]);
+      // Paragraphs are writing, not rows; a landmark (a named section) is a
+      // part of the page.
+      if (kids[i].tagName === 'P') { paragraphs++; continue; }
+      if (landmark(kids[i])) continue;
       if (!count[s]) { count[s] = 0; order.push(s); }
       if (++count[s] > top_) top_ = count[s];
     }
-    if (top_ < 5 || top_ < kids.length / 4) return null;
+    // As many paragraphs as rows, and the rows are an article's parts (a
+    // heading's wrapper, a figure) between its writing: sections.
+    if (top_ < 5 || top_ < kids.length / 4 || paragraphs >= top_) return null;
     var near = order.filter(function (s) { return count[s] >= 5 && count[s] >= top_ * 0.8; });
     return near.filter(function (s) { return !/\.$/.test(s); })[0] || near[0];
   }
@@ -361,7 +372,7 @@
       // who said it.
       if (!inside && !here.prose && words(t) >= 6) here.prose = t;
       say(here, t);
-      if (want && !inside && matches.length < 40 && t.toLowerCase().indexOf(want) >= 0) matches.push({ n: here, t: t });
+      if (want && !inside && matches.length < 40 && has(t)) matches.push({ n: here, t: t });
       return;
     }
     if (el.nodeType !== 1 || SKIP.test(el.tagName) || ++visited > LIMIT) return;
@@ -393,8 +404,8 @@
       top().collapsed++;
       say(n, squash(inner));
       if (want && matches.length < 40) {
-        if (summary && n.label.toLowerCase().indexOf(want) >= 0) matches.push({ n: n, el: summary });
-        else if (inner.toLowerCase().indexOf(want) >= 0) matches.push({ n: n, t: squash(inner), hidden: true });
+        if (summary && has(n.label)) matches.push({ n: n, el: summary });
+        else if (has(inner)) matches.push({ n: n, t: squash(inner), hidden: true });
       }
       return;
     }
@@ -402,11 +413,21 @@
     var land = landmark(el);
     var level = land ? 0 : heading(el);
     if (land) {
-      n = node(land, el.getAttribute('aria-label') || '', el);
+      var by = el.getAttribute('aria-labelledby');
+      n = node(land, el.getAttribute('aria-label') || (by ? cut(by.split(/\s+/).map(function (i) {
+        var e = document.getElementById(i); return e ? e.innerText : ''; }).join(' '), 80) : ''), el);
       if (land === 'dialog' && !n.label) n.label = cut(el.innerText, 60);
+      // A section that starts with a heading of its own is that heading's
+      // part of the page: it closes the one before as the heading would.
+      var first = land === 'region' && el.querySelector('h1,h2,h3,h4,h5,h6');
+      if (first) {
+        while (top().type === 'heading' && top().level >= +first.tagName[1]) stack.pop();
+        depthIn = stack.length;
+      }
       // The page's own parts stand apart from the headings around them; a
-      // form or a named region inside the writing belongs to its heading.
-      var base = !n.label ? land : slug(n.label) === land ? land : land + '-' + n.label;
+      // form or a named region inside the writing belongs to its heading. A
+      // named section is called by its name: §history.
+      var base = !n.label ? land : land === 'region' || slug(n.label) === land ? n.label : land + '-' + n.label;
       adopt(n, base, /^(banner|nav|main|aside|footer|search|dialog)$/.test(land) ? outer() : null);
       stack.push(n);
       if (land === 'dialog') attention.push(n);
@@ -415,7 +436,7 @@
       n = node('heading', cut(el.innerText, 80), el, level);
       adopt(n, n.label);
       stack.push(n);
-      if (want && n.label.toLowerCase().indexOf(want) >= 0) matches.push({ n: n, head: true, t: n.label });
+      if (want && has(n.label)) matches.push({ n: n, head: true, t: n.label });
       // Its words are its name; a link in it is the section's.
       naming++;
       walk(el);
@@ -429,7 +450,7 @@
         top()[family(kind(el))]++;
         top().controls.push(el);
         if (el.getAttribute('aria-expanded') === 'false') top().collapsed++;
-        if (want && matches.length < 40 && (name(el) + ' ' + (el.href || '')).toLowerCase().indexOf(want) >= 0) matches.push({ n: top(), el: el });
+        if (want && matches.length < 40 && (has(name(el)) || has(el.href))) matches.push({ n: top(), el: el });
         inside++;
       }
     }
@@ -467,10 +488,12 @@
       n = node('list', el.getAttribute('aria-label') || '', el);
       adopt(n, listName(el) || (top().id !== 'page' ? top().id + '-list' : 'list'));
       stack.push(n);
-      var kids = el.children, item = null;
+      // Every child node, words between rows included: they are the row's
+      // before them, or the list's before the first.
+      var kids = el.childNodes, item = null;
       for (var j = 0; j < kids.length; j++) {
         var it = kids[j];
-        if (shape(it) === rows) {
+        if (it.nodeType === 1 && shape(it) === rows) {
           if (item) close(n, item);
           if (!shown(it)) { item = null; continue; }
           item = node('item', '', it);
@@ -732,7 +755,7 @@
       var at = '§' + m.n.id;
       if (m.el) return line(at + ' ' + control(m.el));
       if (m.head) return line(at + ' heading "' + cut(m.t, 80) + '"');
-      var i = m.t.toLowerCase().indexOf(want);
+      var hit = wantRe.exec(m.t), i = hit ? hit.index + hit[1].length : 0;
       line(at + (m.hidden ? ' hidden until opened:' : '') + ' "' + (i > 40 ? '…' : '') + cut(m.t.slice(Math.max(0, i - 40), i + want.length + 60), 110) + '"');
     });
     if (!matches.length) line('nothing on the page says "' + want + '"');
@@ -750,11 +773,11 @@
     // finds the search box, not every search.worldcat.org reference.
     var byAddress = [], named = 0;
     (function each(n) {
-      if (n.type === 'heading' && n.label.toLowerCase().indexOf(want) >= 0) line('h' + n.level + ' "' + cut(n.label, 70) + '"' + where(n.el));
+      if (n.type === 'heading' && has(n.label)) line('h' + n.level + ' "' + cut(n.label, 70) + '"' + where(n.el));
       n.controls.forEach(function (c) {
         var q = choice(c) && question(c);
-        if ((name(c) + ' ' + (q ? q.text : '')).toLowerCase().indexOf(want) >= 0) { item(c); named++; }
-        else if (c.href && c.href.toLowerCase().indexOf(want) >= 0) byAddress.push(c);
+        if (has(name(c)) || (q && has(q.text))) { item(c); named++; }
+        else if (c.href && has(c.href)) byAddress.push(c);
       });
       n.kids.forEach(each);
     })(root);
