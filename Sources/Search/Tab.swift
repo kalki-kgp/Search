@@ -243,6 +243,48 @@ enum Autoplay {
     }
 }
 
+/// With Settings › Videos wait for a click, a click on a video that hasn't
+/// started yet starts it, while it is still the click. A player that isn't
+/// ready when it is clicked (YouTube's, for its first second or two in a
+/// new tab) doesn't call play() then; it calls it a moment later, outside
+/// the click, WebKit refuses that, and the player resets to 0:00 and
+/// stays there — the click spent. So after the page's own handlers have
+/// had the click, a video still paused and never played is played here.
+///
+/// The video is found by shape, not by any site's names: the nearest box
+/// around what was clicked that holds one video and is about its size (a
+/// player's controls sit over its video). A link's click is the link's.
+/// Search's own world, so the page sees nothing; every frame, for embeds.
+enum ClickPlay {
+    static var on: Bool { Store.settings.bool(forKey: Preferences.waitsKey) }
+
+    static let script = """
+    (function () {
+      function player(t) {
+        for (var n = t; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+          if (n.tagName === 'VIDEO') return n;
+          var all = n.getElementsByTagName('video');
+          if (!all.length) continue;
+          if (all.length > 1) return null;
+          var v = all[0], a = n.getBoundingClientRect(), b = v.getBoundingClientRect();
+          return a.width <= b.width * 1.25 + 40 && a.height <= b.height * 1.25 + 40 ? v : null;
+        }
+        return null;
+      }
+      function unstarted(v) { return v.paused && !v.ended && v.played.length === 0; }
+      addEventListener('click', function (e) {
+        var t = e.target;
+        if (!e.isTrusted || e.button !== 0 || !t || t.nodeType !== 1 || t.closest('a[href]')) return;
+        var v = player(t);
+        if (!v || !unstarted(v)) return;
+        // After the page's own handlers: one that played it is left alone.
+        // WebKit still counts a timer set inside a click as the click.
+        setTimeout(function () { if (unstarted(v)) v.play().catch(function () {}); }, 0);
+      }, true);
+    })();
+    """
+}
+
 /// How far down its page a tab is. Its own object, watched by the fill in
 /// the tab's pill alone: as part of the tab, every percent scrolled re-ran
 /// everything that watches the tab — the page's stage, the buttons, the
@@ -962,6 +1004,12 @@ final class Tab: ObservableObject, Identifiable {
         controller.addUserScript(
             WKUserScript(source: Tab.volumeScript, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)
         )
+        // Only while videos wait for a click; every frame, for embedded players.
+        if ClickPlay.on {
+            controller.addUserScript(
+                WKUserScript(source: ClickPlay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Web.world)
+            )
+        }
         // Every frame: videos are embedded more often than not (see Speed.swift).
         if Speed.on {
             controller.addUserScript(
