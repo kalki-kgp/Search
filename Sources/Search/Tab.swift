@@ -2311,6 +2311,32 @@ final class PageView: WKWebView {
         """
     }
 
+    /// A new swipe, by fingers or by the right button: whatever the last
+    /// one left behind is cleared.
+    private func begin() {
+        sideways = 0
+        gatheredX = 0
+        gatheredY = 0
+        axis = nil
+        free = nil
+        asked = nil
+        spent = false
+        armedNow = false
+        showing = false
+        holding?.cancel()
+        holding = nil
+        stops = nil
+        items = []
+        // A disc still on its way out belongs to the last gesture. It is
+        // already invisible; it is only taken off the stage so the next
+        // one arrives fresh rather than fading back in.
+        pulls += 1
+        if going {
+            going = false
+            onPull?(nil)
+        }
+    }
+
     override func scrollWheel(with event: NSEvent) {
         onTouch?()
         // The page gets every event first and scrolls as it always did. The
@@ -2328,27 +2354,7 @@ final class PageView: WKWebView {
 
         switch event.phase {
         case .mayBegin, .began:
-            sideways = 0
-            gatheredX = 0
-            gatheredY = 0
-            axis = nil
-            free = nil
-            asked = nil
-            spent = false
-            armedNow = false
-            showing = false
-            holding?.cancel()
-            holding = nil
-            stops = nil
-            items = []
-            // A disc still on its way out belongs to the last gesture. It is
-            // already invisible; it is only taken off the stage so the next
-            // one arrives fresh rather than fading back in.
-            pulls += 1
-            if going {
-                going = false
-                onPull?(nil)
-            }
+            begin()
         case .changed:
             guard !spent else { return }
             if axis == nil {
@@ -2414,22 +2420,9 @@ final class PageView: WKWebView {
         onTouch?()
         rightDown = event
         byMouse = true
-        sideways = 0
-        axis = nil
+        begin()
+        // No page to ask: the mouse is free to go either way at once.
         free = true
-        asked = nil
-        spent = false
-        armedNow = false
-        showing = false
-        holding?.cancel()
-        holding = nil
-        stops = nil
-        items = []
-        pulls += 1
-        if going {
-            going = false
-            onPull?(nil)
-        }
     }
 
     override func rightMouseDragged(with event: NSEvent) {
