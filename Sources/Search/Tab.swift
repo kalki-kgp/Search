@@ -2177,14 +2177,11 @@ final class PageView: WKWebView {
         super.mouseDown(with: event)
     }
 
-    override func rightMouseDown(with event: NSEvent) {
-        pressedAt = ProcessInfo.processInfo.systemUptime
-        super.rightMouseDown(with: event)
-    }
-
     /// When the page was last pressed, as AppKit hands the press over: before
     /// the page hears of it, so always ahead of anything the page does with
-    /// it. The pop-up guard's clock (PopupGuard.swift).
+    /// it. The pop-up guard's clock (PopupGuard.swift). The right button's
+    /// press reaches the page only when it turns out a click, at its release
+    /// (rightMouseUp): that is when it is set for it.
     private(set) var pressedAt: TimeInterval?
 
     /// The side buttons a mouse has for back and forward — button 3 and 4.
@@ -2549,6 +2546,7 @@ final class PageView: WKWebView {
         if axis == nil {
             // Never went anywhere: a right-click, the page's and its menu's.
             spent = true
+            pressedAt = ProcessInfo.processInfo.systemUptime
             super.rightMouseDown(with: down)
             super.rightMouseUp(with: event)
             return
