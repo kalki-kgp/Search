@@ -121,6 +121,10 @@
                                        PNG; on: the card in the window
     ./bench quit                       test run: quit the app as ⌘Q does
     ./bench middle ID X Y              test run: the middle button clicked at X Y of a tab's page
+    ./bench rdrag ID X Y DX [STEPS] [MS] [DY]
+                                       test run: the right button held at X Y of a tab's page, drawn DX points
+                                       sideways (and DY down) in STEPS moves MS apart (12, 16), let go → the discs shown, and
+                                       where the page went
     ./bench pin ID [off|home]          test run: pin a tab, unpin it, or double-click it (home)
     ./bench fill [STEPS]               test run: the page reporting its scroll STEPS times, each timed until the window rests
     ./bench peek URL|close             test run: the peek panel over the tab in front, as a shift-click opens it
@@ -552,6 +556,12 @@ def main(argv):
     elif verb == "middle":
         if len(args) != 3: sys.exit("usage: bench middle ID X Y")
         request["id"], request["x"], request["y"] = args[0], float(args[1]), float(args[2])
+    elif verb == "rdrag":
+        if len(args) not in (4, 5, 6, 7): sys.exit("usage: bench rdrag ID X Y DX [STEPS] [MS] [DY]")
+        request["id"], request["x"], request["y"], request["dx"] = args[0], float(args[1]), float(args[2]), float(args[3])
+        if len(args) > 4: request["steps"] = int(args[4])
+        if len(args) > 5: request["ms"] = int(args[5])
+        if len(args) > 6: request["dy"] = float(args[6])
     elif verb == "pin":
         if len(args) not in (1, 2) or args[1:] not in ([], ["off"], ["home"]): sys.exit("usage: bench pin ID [off|home]")
         request["id"] = args[0]
