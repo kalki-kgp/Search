@@ -173,6 +173,8 @@ final class Bench {
         if let browser {
             for tab in browser.tabs where tab.bench { browser.close(tab) }
         }
+        // And every tab given to it is yours alone again.
+        for tab in Browsers.all.flatMap(\.tabs) where tab.agentDrives { tab.letAgentDrive(false) }
     }
 
     private func accept() {
@@ -312,7 +314,9 @@ final class Bench {
         case "tabs":
             // A private tab is nobody's business but yours: a test run has none
             // of yours, so there every tab is listed.
-            answer(["tabs": browser.tabs.filter { Store.testing || !$0.shy }.map(describe)])
+            // Tabs given to the agent in other windows are listed too.
+            let given = Browsers.all.filter { $0 !== browser }.flatMap(\.tabs).filter(\.agentDrives)
+            answer(["tabs": (browser.tabs.filter { Store.testing || !$0.shy } + given).map(describe)])
 
         case "open":
             guard let url = (request["url"] as? String).flatMap(Address.url(from:)) else {
@@ -324,6 +328,24 @@ final class Bench {
             guard !shy || Store.testing else { answer(["error": "open private only works on a --test run"]); return }
             let tab = browser.benchOpen(url, shy: shy)
             house(tab)
+            answer(describe(tab))
+
+        case "strict":
+            // A test run holding to the installed browser's rule on which
+            // tabs can be acted on (find), to test it. Test runs only.
+            guard Store.testing else { answer(["error": "strict only works on a --test run"]); return }
+            strict = request["on"] as? Bool ?? true
+            answer(["strict": strict])
+
+        case "drive":
+            // What the tab menu's Let Agent Drive This Tab does, for a test:
+            // a script never gives itself a tab of yours, so only on a
+            // SEARCH_PROBE run. "off" takes it back.
+            guard Store.testing else { answer(["error": "drive only works on a --test run — give a tab from its menu instead"]); return }
+            guard let ref = (request["id"] as? String)?.lowercased(), !ref.isEmpty,
+                  let tab = Browsers.all.flatMap(\.tabs).first(where: { $0.id.uuidString.lowercased().hasPrefix(ref) })
+            else { answer(missing(request)); return }
+            tab.letAgentDrive(request["off"] as? Bool != true)
             answer(describe(tab))
 
         case "go":
@@ -343,11 +365,11 @@ final class Bench {
                 return
             }
             guard let tab = find(request, in: browser) else { answer(missing(request)); return }
-            guard tab.bench else {
-                answer(["error": "not a bench tab — only tabs the bench opened can be closed from here"])
+            guard tab.bench || tab.agentDrives || lenient else {
+                answer(["error": "not a bench tab — only tabs the bench opened, or ones given to it, can be closed from here"])
                 return
             }
-            browser.close(tab)
+            owner(of: tab, or: browser).close(tab)
             answer(["closed": 1])
 
         case "wait":
@@ -377,12 +399,12 @@ final class Bench {
         case "select":
             // Picking a tab takes the window over, which the bench never does
             // to someone using it: only on a SEARCH_PROBE run.
-            guard Store.testing else {
-                answer(["error": "select only works on a --test run — it would take your window over"])
+            // A tab given to the bench may be picked too: you handed it over.
+            guard let tab = find(request, in: browser), lenient || tab.agentDrives else {
+                answer(["error": "select only works on a --test run, or on a tab given to the agent — it would take your window over"])
                 return
             }
-            guard let tab = find(request, in: browser) else { answer(missing(request)); return }
-            browser.select(tab)
+            owner(of: tab, or: browser).select(tab)
             answer(describe(tab))
 
         case "text":
@@ -469,8 +491,8 @@ final class Bench {
             // A script for every document this bench tab loads from now on,
             // in the page's world, before any of the page's or the blocker's:
             // the only way to see what a page does while it starts. Nothing
-            // for the tab means none. The bench's own tabs only.
-            guard let tab = find(request, in: browser), tab.bench || Store.testing else { answer(missing(request)); return }
+            // for the tab means none. The bench's tabs, and those given to it.
+            guard let tab = find(request, in: browser), tab.bench || tab.agentDrives || lenient else { answer(missing(request)); return }
             let js = request["js"] as? String ?? ""
             tab.benchEarly = js.isEmpty ? nil : js
             answer(["ok": true])
@@ -536,8 +558,8 @@ final class Bench {
             // events — trusted, as a hand's is — where `click` only runs
             // element.click() in the page, which a password manager, for one,
             // is right to ignore. `text=Sign in` picks a button or link by its
-            // words. The bench's own tabs only (find), or anything on a
-            // SEARCH_PROBE run: a bench tab is never the page you are using.
+            // words. The bench's tabs and those given to it (find), or anything on a
+            // SEARCH_PROBE run; one of yours only once you have handed it over.
             guard let tab = find(request, in: browser), let selector = request["selector"] as? String else { answer(missing(request)); return }
             house(tab)
             snap(tab, selector) {
@@ -597,7 +619,7 @@ final class Bench {
             // Files for the chooser a button opens: the button is tapped, as a
             // hand would, and the chooser it asks for is answered with these
             // files instead of a panel (Dialogs: runOpenPanelWith). Files the
-            // command names, on this Mac, for the bench's own tabs only.
+            // command names, on this Mac, for the bench's tabs and those given to it.
             guard let tab = find(request, in: browser), let selector = request["selector"] as? String else { answer(missing(request)); return }
             let paths = request["paths"] as? [String] ?? []
             guard !paths.isEmpty else { answer(["error": "upload needs a file"]); return }
@@ -644,9 +666,9 @@ final class Bench {
         case "show":
             // A bench tab brought to the front of its window, to be watched:
             // asked for by name, so the window is taken over only when that
-            // is what is wanted. The bench's own tabs only.
+            // is what is wanted. The bench's tabs, and those given to it.
             guard let tab = find(request, in: browser) else { answer(missing(request)); return }
-            browser.select(tab)
+            owner(of: tab, or: browser).select(tab)
             answer(describe(tab))
 
         case "towindow":
@@ -990,9 +1012,10 @@ final class Bench {
         case "key":
             // Keys pressed on a tab, as real key events handed to its view —
             // for what the page does with them, and what comes back unused.
-            // Only on a SEARCH_PROBE run: it types into a page.
-            guard Store.testing else { answer(["error": "key only works on a --test run — it would type into your page"]); return }
+            // Only on a SEARCH_PROBE run, or a tab given to the agent: it
+            // types into a page.
             guard let tab = find(request, in: browser), let text = request["text"] as? String else { answer(missing(request)); return }
+            guard lenient || tab.agentDrives else { answer(["error": "key only works on a --test run, or on a tab given to the agent — it would type into your page"]); return }
             house(tab)
             let view = tab.web
             view.window?.makeFirstResponder(view)
@@ -2606,7 +2629,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "pdf", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "early", "watch", "until", "tap", "pick", "upload", "show",
+                "tabs", "open", "drive", "strict", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "pdf", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "accounts", "find", "answer", "visible", "ai", "notifications", "see", "read", "seek", "early", "watch", "until", "tap", "pick", "upload", "show",
             ]])
         }
     }
@@ -3111,9 +3134,24 @@ final class Bench {
     /// SEARCH_PROBE run has nobody's tabs in it, so there any tab answers,
     /// as for `tap` and `select`: a popup a bench page opened with
     /// `window.open` carries no flask and would be out of reach otherwise.
+    /// A tab to act on: one the bench opened, one you gave it from the
+    /// tab's menu (Tab.agentDrives, in any window), or any on a test run.
     private func find(_ request: [String: Any], in browser: Browser) -> Tab? {
         guard let ref = (request["id"] as? String)?.lowercased(), !ref.isEmpty else { return nil }
-        return browser.tabs.first { (Store.testing || $0.bench) && $0.id.uuidString.lowercased().hasPrefix(ref) }
+        let all = [browser] + Browsers.all.filter { $0 !== browser }
+        return all.lazy.flatMap(\.tabs).first {
+            (lenient || $0.bench || $0.agentDrives) && $0.id.uuidString.lowercased().hasPrefix(ref)
+        }
+    }
+
+    /// A test run acts on any tab — unless `strict on` asked it to hold to
+    /// what the installed browser allows, to test that rule itself.
+    private var strict = false
+    private var lenient: Bool { Store.testing && !strict }
+
+    /// The window a tab is in: a tab given to the bench may be in any.
+    private func owner(of tab: Tab, or browser: Browser) -> Browser {
+        Browsers.all.first { $0.tabs.contains { $0.id == tab.id } } ?? browser
     }
 
     /// The last look at each tab an agent read — its address and the ids of
@@ -3152,6 +3190,8 @@ final class Bench {
             "hollow": tab.hollow,
             "view": tab.built?.url?.absoluteString ?? "",
             "bench": tab.bench,
+            // Given to the agent from its menu: it can be acted on.
+            "driven": tab.agentDrives,
             "active": tab.id == browser?.activeID,
             "asleep": tab.asleep,
             "shy": tab.shy,

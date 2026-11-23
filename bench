@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Drive the Search you already have open, from the shell.
 
-    ./bench tabs                       every tab, yours and the bench's
+    ./bench tabs                       every tab, yours and the bench's: ⚗ the bench's, ◆ one given to the agent
+                                       from its menu (Let Agent Drive This Tab), acted on as a bench tab, ● yours in front
+    ./bench drive ID [off]             give a tab to the agent as its menu does, or take it back — --test runs only
+    ./bench strict [on|off]            a test run holds to the installed browser's rule on which tabs can be acted on
     ./bench find TEXT [next N] [back N] [case] [words]
                                        test run: Find on Page as typed into the bar, then Next or Previous
                                        N times → what the bar says, and how long the page took
@@ -10,18 +13,18 @@
     ./bench go ID URL                  send a bench tab somewhere else
     ./bench wait ID [SECONDS]          until the page has loaded
     ./bench sleep ID                   put a tab to sleep now, or say what keeps it awake
-    ./bench select ID                  bring a tab to the front — --test runs only
+    ./bench select ID                  bring a tab to the front — --test runs, or a tab given to the agent
     ./bench resize W H [STEPS]         take the window to W×H in steps, like a drag — --test runs only
-    ./bench key ID TEXT                press keys on a tab as real key events — --test runs only
+    ./bench key ID TEXT                press keys on a tab as real key events — --test runs, or a tab given to the agent
     ./bench press CODE CHARS [MODS…]   press a key on the whole app (cmd shift ctrl opt, repeat) — --test runs only
-    ./bench tap ID SELECTOR [MODS…]    a real mouse click on an element (or text=Words), shift/cmd/opt held — bench tabs, or
+    ./bench tap ID SELECTOR [MODS…]    a real mouse click on an element (or text=Words), shift/cmd/opt held — bench tabs, tabs given to the agent, or
                                        anything on a --test run
     ./bench pick ID [QUESTION] ANSWER [tap]
                                        a checkbox or radio by the words of its question and its answer, clicked
                                        (tap: a real mouse click); one already chosen is left alone; more than one
                                        that fits is listed, not guessed
     ./bench upload ID SELECTOR PATH…   tap the button that opens a file chooser, and answer the chooser with
-                                       these files — bench tabs only
+                                       these files — bench tabs, or tabs given to the agent
     ./bench show ID                    bring a bench tab to the front of its window, to watch it
     ./bench text ID                    the page's text
     ./bench eval ID JS [search]        run JavaScript, print what it returns; search: in Search's own world
@@ -44,7 +47,7 @@
     ./bench submit ID SELECTOR         the form around SELECTOR
     ./bench shot ID [PATH] [WIDTH]     a PNG of the page → its path
     ./bench pdf PATH                   test run: export the page on screen as a continuous, screen-layout PDF
-    ./bench close ID | all             only tabs the bench opened
+    ./bench close ID | all             only tabs the bench opened, or tabs given to the agent
     ./bench probe                      the window's own state: panels, modal, windows
     ./bench extensions                 installed extensions, loaded or not, with their warnings
     ./bench little URL|keep|close      a small window for a link (made unseen), kept into the row, or closed
@@ -239,7 +242,8 @@ def render(verb, answer):
     if verb == "tabs":
         rows = []
         for tab in answer.get("tabs", []):
-            mark = "⚗" if tab.get("bench") else ("●" if tab.get("active") else " ")
+            # ◆: a tab of the person's, given to the agent from its menu.
+            mark = "⚗" if tab.get("bench") else "◆" if tab.get("driven") else ("●" if tab.get("active") else " ")
             state = " …" if tab.get("loading") else (" z" if tab.get("asleep") else "")
             group = f"  [{clean(tab['group'])}]" if tab.get("group") else ""
             rows.append(f"{mark} {tab['id']}  {clean(tab.get('title')) or '—'}  {clean(tab.get('url'))}{state}{group}")
@@ -279,6 +283,13 @@ def main(argv):
         if not args: sys.exit("usage: bench wait ID [SECONDS]")
         request["id"] = args[0]
         if len(args) > 1: request["seconds"] = float(args[1])
+    elif verb == "strict":
+        if args not in ([], ["on"], ["off"]): sys.exit("usage: bench strict [on|off]")
+        request["on"] = args != ["off"]
+    elif verb == "drive":
+        if len(args) not in (1, 2) or (len(args) == 2 and args[1] != "off"): sys.exit("usage: bench drive ID [off]")
+        request["id"] = args[0]
+        if len(args) == 2: request["off"] = True
     elif verb in ("text", "close", "sleep", "select", "visible", "show"):
         if len(args) != 1: sys.exit(f"usage: bench {verb} ID")
         request["id"] = args[0]

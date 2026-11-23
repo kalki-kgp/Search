@@ -28,8 +28,8 @@ _loader.exec_module(bench)
 WORLD = os.environ.get("SEARCH_WORLD") or None
 
 INSTRUCTIONS = """Search is a Mac browser you can read and drive.
-Start with tabs (every tab, a ⚗ is one you opened) or open. Read a page with see: a small page comes whole; a large one as what needs attention (lines starting with !), then sections (§name) with their size and first words. Open sections with see's sections, read their words with read, find words with seek. Things you can press or fill in are numbered [N]: pass "@N" as target to click, type, submit and tap. A number stays with its element as long as it is on the page. Checkboxes and radios are listed under their question (? "…"); choose one with pick. After an action, an effect: line says what it changed (checked, a button that can be pressed now) or that the page did not take it — then use tap. Wait on the page with until, not sleeps.
-You can read any tab but a private one; you can act only on tabs you opened. Close the tabs you opened when you are done."""
+Start with tabs (every tab, a ⚗ is one you opened, a ◆ one the person gave you) or open. Read a page with see: a small page comes whole; a large one as what needs attention (lines starting with !), then sections (§name) with their size and first words. Open sections with see's sections, read their words with read, find words with seek. Things you can press or fill in are numbered [N]: pass "@N" as target to click, type, submit and tap. A number stays with its element as long as it is on the page. Checkboxes and radios are listed under their question (? "…"); choose one with pick. After an action, an effect: line says what it changed (checked, a button that can be pressed now) or that the page did not take it — then use tap. Wait on the page with until, not sleeps.
+You can read any tab but a private one; you can act only on tabs you opened and tabs the person gave you (◆, from the tab's menu: Let Agent Drive This Tab). A given tab is the person's own, signed in as them: act on it only as they asked, and never close it unless asked. It is taken back if it goes to another site. Close the tabs you opened when you are done."""
 
 
 def tab(desc="The tab's id from tabs or open (its first characters are enough)."):
@@ -37,7 +37,7 @@ def tab(desc="The tab's id from tabs or open (its first characters are enough)."
 
 
 TOOLS = [
-    ("tabs", "Every open tab: its id, title and address. ⚗ marks the ones you opened, ● the one the person is on.", {}, []),
+    ("tabs", "Every open tab: its id, title and address. ⚗ marks the ones you opened, ◆ ones the person gave you to act on, ● the one the person is on.", {}, []),
     ("open", "Open an address in a new tab of your own, at the end of the row, without bringing it forward. Returns the tab's id.",
      {"url": {"type": "string", "description": "An address, such as https://example.com."}}, ["url"]),
     ("go", "Send a tab you opened to another address.", {"id": tab(), "url": {"type": "string"}}, ["id", "url"]),
