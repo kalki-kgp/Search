@@ -734,11 +734,17 @@ struct ContentView: View {
                     Text("Show in Finder")
                         .foregroundStyle(Palette.muted)
                 }
+                // A pop-up the guard refused: the line opens it after all.
+                if browser.announcedOpen != nil {
+                    Text("Open")
+                        .foregroundStyle(Palette.muted)
+                }
             }
                 .font(.system(size: 12))
                 .contentShape(Capsule())
                 .onTapGesture {
                     if let file = browser.announcedFile { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+                    if browser.announcedOpen != nil { browser.openRefused() }
                 }
                 .padding(.horizontal, 15)
                 .padding(.vertical, 9)

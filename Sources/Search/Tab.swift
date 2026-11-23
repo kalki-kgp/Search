@@ -29,7 +29,8 @@ enum Web {
     @MainActor static func release(_ controller: WKUserContentController) {
         for name in [ScrollRelay.name, VeilRelay.name, FormRelay.name, ImageRelay.name,
                      StoreRelay.name, PasskeyRelay.name, MiddleRelay.name, IconRelay.name,
-                     CaptureRelay.name, Speed.name, ShieldRelay.name, TranslateRelay.name] {
+                     CaptureRelay.name, Speed.name, ShieldRelay.name, TranslateRelay.name,
+                     PressRelay.name] {
             controller.removeScriptMessageHandler(forName: name, contentWorld: world)
             controller.removeScriptMessageHandler(forName: name, contentWorld: .page)
         }
@@ -595,6 +596,7 @@ final class Tab: ObservableObject, Identifiable {
     private let shop = StoreRelay()
     private let iconChanges = IconRelay()
     private let middles = MiddleRelay()
+    private let presses = PressRelay()
     private let passkeyRelay = PasskeyRelay()
     private let hovered = HoveredLink()
     private let capture = CaptureRelay()
@@ -620,6 +622,13 @@ final class Tab: ObservableObject, Identifiable {
     /// page that opens one can call it anything, "Sign in with Google" over
     /// somebody else's address included.
     var popup = false
+
+    /// The sites of new tabs the pop-up guard refused this tab, the last
+    /// few, for the bench: test runs only (see PopupGuard.swift).
+    var refusedPopups: [String] = []
+    /// The last press the page's frames reported, and the link it was on if
+    /// any (PressRelay). Its time is when the report came in.
+    var pressed: PopupGuard.Press?
 
     /// One letter, when the tab has been pinned. A pinned tab keeps its place
     /// at the head of the row and gives up its title for that letter — which
@@ -751,6 +760,7 @@ final class Tab: ObservableObject, Identifiable {
         hovered.tab = self
         controller.add(hovered, contentWorld: .defaultClient, name: HoveredLink.name)
         controller.add(middles, contentWorld: Web.world, name: MiddleRelay.name)
+        controller.add(presses, contentWorld: Web.world, name: PressRelay.name)
         translate.tab = self
         controller.add(translate, contentWorld: Web.world, name: TranslateRelay.name)
         // These two patch the page's own functions (getUserMedia, play), so
@@ -829,6 +839,7 @@ final class Tab: ObservableObject, Identifiable {
         capture.tab = self
         iconChanges.tab = self
         middles.tab = self
+        presses.tab = self
         ears.watch(web) { [weak self] on in
             self?.noisy = on
             if on { self?.hasMedia = true }
@@ -940,8 +951,12 @@ final class Tab: ObservableObject, Identifiable {
         controller.addUserScript(
             WKUserScript(source: Swipe.watch, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Web.world)
         )
+        // One script for both, every frame in Search's world: each script is
+        // parsed and kept by every frame on its own. The pop-up guard's as a
+        // script of its own added 5.5 MB to a page of 200 frames; inside this
+        // one, nothing measurable (PopupGuard.swift).
         controller.addUserScript(
-            WKUserScript(source: ImageRelay.watch, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Web.world)
+            WKUserScript(source: ImageRelay.watch + PressRelay.watch, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Web.world)
         )
         // The store's "Add to Search" only where Search can add extensions.
         // Before macOS 15.4 it was drawn all the same, and pressing it did
@@ -2086,8 +2101,19 @@ final class PageView: WKWebView {
 
     override func mouseDown(with event: NSEvent) {
         onTouch?()
+        pressedAt = ProcessInfo.processInfo.systemUptime
         super.mouseDown(with: event)
     }
+
+    override func rightMouseDown(with event: NSEvent) {
+        pressedAt = ProcessInfo.processInfo.systemUptime
+        super.rightMouseDown(with: event)
+    }
+
+    /// When the page was last pressed, as AppKit hands the press over: before
+    /// the page hears of it, so always ahead of anything the page does with
+    /// it. The pop-up guard's clock (PopupGuard.swift).
+    private(set) var pressedAt: TimeInterval?
 
     /// The side buttons a mouse has for back and forward — button 3 and 4.
     /// No standard hands out that numbering; it's the X11 button order
@@ -2098,7 +2124,9 @@ final class PageView: WKWebView {
         switch event.buttonNumber {
         case 3 where canGoBack: goBack()
         case 4 where canGoForward: goForward()
-        default: super.otherMouseDown(with: event)
+        default:
+            pressedAt = ProcessInfo.processInfo.systemUptime
+            super.otherMouseDown(with: event)
         }
     }
 
