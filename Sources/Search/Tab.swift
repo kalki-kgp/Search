@@ -331,6 +331,9 @@ final class Tab: ObservableObject, Identifiable {
         // went with it.
         if let built { Passkeys.shared.forget(built) }
         if let url = built?.url, url.absoluteString != "about:blank" { committed = url }
+        // Given to the bench for one site: another site takes it back.
+        if agentDrives, let url = built?.url, url.absoluteString != "about:blank",
+           Tab.site(of: url) != drivenSite { letAgentDrive(false) }
         // A page arrived after all: the address is its own again.
         if held != nil, let url = built?.url, url.absoluteString != "about:blank" {
             held = nil
@@ -512,6 +515,41 @@ final class Tab: ObservableObject, Identifiable {
         let gone = DispatchWorkItem { [weak self] in self?.agentLooking = false }
         agentGone = gone
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: gone)
+    }
+
+    /// A tab of yours handed to the bench from its menu ("Let Agent Drive
+    /// This Tab"): a script may act on it as on a tab it opened — click,
+    /// type, run script, go, close. The bench's socket answers anything you
+    /// run, so this is given a tab at a time, by hand, and for one site:
+    /// it ends when the page goes to another site, when you take it back
+    /// from the same menu, or when the bench is switched off. Never a
+    /// private tab, never kept in the session.
+    @Published private(set) var agentDrives = false
+    /// The site it was given for (Vault.registrable of its host).
+    private var drivenSite: String?
+
+    /// Whether the tab can be given at all: an ordinary web page of yours.
+    var canBeDriven: Bool {
+        !shy && !bench && Tab.site(of: pageAddress) != nil
+    }
+
+    func letAgentDrive(_ on: Bool) {
+        guard on, canBeDriven else {
+            agentDrives = false
+            drivenSite = nil
+            // What a script asked to run first in it goes with the grant.
+            if !bench { benchEarly = nil }
+            return
+        }
+        drivenSite = Tab.site(of: pageAddress)
+        agentDrives = true
+    }
+
+    private static func site(of url: URL?) -> String? {
+        guard let url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = url.host(), !host.isEmpty
+        else { return nil }
+        return Vault.registrable(host)
     }
 
     /// Not `web`: a tab asleep is muted without being woken, and hears of

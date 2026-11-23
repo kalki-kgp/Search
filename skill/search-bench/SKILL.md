@@ -54,12 +54,13 @@ before launching, not after, or the world opens in front and has to be thrown aw
 
 ## Tabs that are not theirs
 
-`./bench tabs` prints one row per tab. `⚗` is a bench tab. `●` is the tab they are on. A trailing `…` is still loading. A trailing `z` is asleep.
+`./bench tabs` prints one row per tab. `⚗` is a bench tab. `◆` is a tab of theirs they gave you from its menu (Let Agent Drive This Tab). `●` is the tab they are on. A trailing `…` is still loading. A trailing `z` is asleep.
 
 - `open` appends a bench tab and prints its id. Keep that id.
 - Pass the id `tabs` printed. Matching is a prefix of the tab's UUID. The first match wins.
-- `close ID` refuses anything except a bench tab. `close all` closes every bench tab, including ones another script opened. Close the ids you opened.
-- `go`, `click`, `type`, `submit`, `eval`, `shot`, and `sleep` act only on `⚗` tabs, except in a test world. `see`, `read`, `seek` and `text` read any tab that isn't private.
+- `close ID` refuses anything except a bench tab or a `◆` tab. `close all` closes every bench tab, including ones another script opened. Close the ids you opened.
+- `go`, `click`, `type`, `submit`, `eval`, `shot`, and `sleep` act only on `⚗` and `◆` tabs, except in a test world. `see`, `read`, `seek` and `text` read any tab that isn't private.
+- A `◆` tab is theirs and signed in as them: also `select`, `key` and `close` work on it, but act only as they asked, and never close it unless asked. It stops being `◆` when it goes to another site, when they untick the menu item, or when the bench is switched off. If they want you to act on a tab of theirs, ask them to give it to you this way; `drive ID` does it only in a test world.
 - Bench tabs are not selected, not stored in the session, and not written to history. A bench page you have not selected is laid out off-screen at 1280×800. That is the page `shot` captures.
 - Close the ids you opened when you finish, including when a later command fails. Turning the socket off closes leftover bench tabs.
 - Send one `./bench` call at a time to a world. A command that never answers is cut off at about 25 seconds. `wait` uses the seconds you pass (default 20) plus a few.
@@ -96,7 +97,7 @@ id=$(./bench --test open https://news.ycombinator.com)
 - `upload ID SELECTOR PATH…` taps the button that opens a file chooser and answers the chooser with those files, no panel. Bench tabs only, absolute paths that exist. An `<input type=file>` with no box of its own is clicked from the page instead.
 - `show ID` brings a bench tab to the front of its window, when they want to watch it work.
 - `click`, `type` and `submit` answer `ok`, then where the page is and anything new that needs attention, after a page the click loaded has finished (3 s at most). `a new page since the last look`, or `changed since the last look: +§reviews −§cart`, says what moved.
-- `see`, `read`, `seek` and `text` work on any tab but a private one, and the tab shows the bench's flask while it is read. Everything that acts — `click`, `type`, `submit`, `go`, `eval`, `until`, `watch` — only on bench tabs, outside a test run. A tab that is asleep can't be read until it is woken.
+- `see`, `read`, `seek` and `text` work on any tab but a private one, and the tab shows the bench's flask while it is read. Everything that acts — `click`, `type`, `submit`, `go`, `eval`, `until`, `watch` — only on bench tabs and `◆` tabs, outside a test run. A tab that is asleep can't be read until it is woken.
 - `until ID JS [SECONDS] [MS]` re-reads an expression until it is truthy (10 s, every 100 ms) and prints `after 0.95 s: VALUE`. When time runs out it prints the last value and exits 1. It carries on across the page being replaced. Don't wait on `document.readyState`: the blank page a tab starts on is already complete. `see`, `read`, `seek` and `text` wait past it themselves.
 - `watch ID JS [SECONDS] [MS]` re-reads an expression (5 s, every 250 ms) and prints a line only when the value changes: `0.61 sent me@example.com`.
 - `early ID [JS]` runs JS first on every document that bench tab loads from then on, ahead of the page and the blocker, in the page's own world. Set it on a blank tab, then `go`. It is how to see what a page does while it starts, which nothing run after load can. Keep what it records on `window` and read it with `eval`. With no JS it stops. Bench tabs only.

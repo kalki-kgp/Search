@@ -925,7 +925,7 @@ private struct TabPill: View {
                 .animation(Motion.quick, value: tab.noisy)
 
                 if !showMedia {
-                    if tab.bench || tab.agentLooking {
+                    if tab.bench || tab.agentDrives || tab.agentLooking {
                         Image(systemName: "flask")
                             .font(.system(size: 9))
                             .foregroundStyle(colour.opacity(0.7))
@@ -1521,6 +1521,13 @@ struct TabMenu: View {
             }
         }
         .disabled(browser.awake(because: tab) != nil)
+        // Only while the bench is on: given by hand, a tab at a time, and
+        // taken back here (Tab.agentDrives).
+        if browser.prefs.bench, !tab.bench, !tab.shy {
+            Divider()
+            Toggle("Let Agent Drive This Tab", isOn: Binding(get: { tab.agentDrives }, set: { tab.letAgentDrive($0) }))
+                .disabled(!tab.agentDrives && !tab.canBeDriven)
+        }
         Divider()
         Button("Close Tab", action: close)
         Button("Close Other Tabs") { browser.closeOthers(but: tab) }

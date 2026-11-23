@@ -691,8 +691,8 @@ private struct SideRow: View {
                 if prefs.glyph == .icons, !tab.isBlank {
                     Mark(icon: tab.icon, letter: tab.monogram, size: 15)
                 }
-                if tab.bench || tab.agentLooking {
-                    // A script's tab, or one a script is reading.
+                if tab.bench || tab.agentDrives || tab.agentLooking {
+                    // A script's tab, one given to it, or one it is reading.
                     Image(systemName: "flask")
                         .font(.system(size: 9))
                         .foregroundStyle(colour.opacity(0.7))
