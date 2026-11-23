@@ -1497,6 +1497,9 @@ final class Browser: NSObject, ObservableObject {
     /// The file a "Saved …" line is about: clicked, the line shows it in
     /// the Finder, and it stays long enough to be clicked.
     @Published private(set) var announcedFile: URL?
+    /// A tab the pop-up guard kept from opening: clicked, the line opens it
+    /// after all (see PopupGuard.swift).
+    @Published private(set) var announcedOpen: (url: URL, from: Tab.ID)?
     /// Downloads while they happen (see Fetching.swift).
     let fetches = Shared.fetches
 
@@ -1530,16 +1533,27 @@ final class Browser: NSObject, ObservableObject {
         announce("Link copied")
     }
 
-    func announce(_ text: String, file: URL? = nil) {
+    func announce(_ text: String, file: URL? = nil, open: (url: URL, from: Tab.ID)? = nil) {
         announcement = text
         announcedFile = file
+        announcedOpen = open
         hush?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.announcement = nil
             self?.announcedFile = nil
+            self?.announcedOpen = nil
         }
         hush = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (file == nil ? 1.7 : 4), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (file == nil && open == nil ? 1.7 : 4), execute: work)
+    }
+
+    /// The line's Open: the tab the pop-up guard refused, next to the page
+    /// that asked for it.
+    func openRefused() {
+        guard let (url, from) = announcedOpen else { return }
+        announcement = nil
+        announcedOpen = nil
+        _ = open(url, foreground: true, from: tabs.first { $0.id == from })
     }
 
     /// The names extensions asked their downloads to be saved under.
@@ -4708,6 +4722,33 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         let from = tab(for: webView)?.id ?? activeID
+        let behind = (webView as? PageView)?.takeBehind() == true
+        // A pop-under: a press on the page that wasn't on a link to where the
+        // new tab goes (see PopupGuard.swift). Off where Shield is paused, so
+        // a site it gets wrong has a way back.
+        let sized = windowFeatures.width != nil || windowFeatures.height != nil
+            || windowFeatures.toolbarsVisibility?.boolValue == false
+        if !behind, Shield.shared.enabled, let opener = tab(for: webView) {
+            let page = webView.url?.host()
+            if !Shield.shared.isPaused(on: page),
+               PopupGuard.refuses(
+                   target: action.request.url, page: page, frame: action.sourceFrame.securityOrigin.host,
+                   sized: sized,
+                   press: PopupGuard.press(at: (webView as? PageView)?.pressedAt, reported: opener.pressed),
+                   now: ProcessInfo.processInfo.systemUptime,
+                   isSuffix: Passkeys.publicSuffix.map { test in { (name: String) in test(name as CFString) } }
+               ) {
+                if Store.testing {
+                    opener.refusedPopups = Array((opener.refusedPopups + [action.request.url?.host() ?? ""]).suffix(5))
+                }
+                // Said only for the page in view: a tab behind can't have
+                // been pressed on just now anyway.
+                if let url = action.request.url, let host = url.host(), visibleTabIDs.contains(opener.id) {
+                    announce("Blocked a pop-up to \(host.hasPrefix("www.") ? String(host.dropFirst(4)) : host)", open: (url, opener.id))
+                }
+                return nil
+            }
+        }
         // WebKit's copy of the opener's configuration still holds the
         // opener's user content controller — its scripts and its message
         // handlers. Shared, the new tab claimed the opener's handlers as its
@@ -4716,12 +4757,11 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         // did nothing at all. Each tab gets a controller of its own.
         configuration.userContentController = WKUserContentController()
         let tab = Tab(shy: tab(for: webView)?.shy ?? false, configuration: configuration)
-        tab.popup = windowFeatures.width != nil || windowFeatures.height != nil
-            || windowFeatures.toolbarsVisibility?.boolValue == false
+        tab.popup = sized
         tab.opener = from
         // The link menu's Open Link in New Tab: behind this tab, where a
         // ⌘-click's goes (see open(_:foreground:)).
-        if (webView as? PageView)?.takeBehind() == true, let source = self.tab(for: webView) {
+        if behind, let source = self.tab(for: webView) {
             prepare(tab)
             if prefs.usesTabGroups, !tab.shy, !tab.bench { tab.groupID = source.groupID }
             tabs.insert(tab, at: placeForNew())

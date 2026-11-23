@@ -12,6 +12,7 @@ in [ROADMAP.md](ROADMAP.md).
 ## Unreleased
 
 ### Added
+- Pop-under ads are stopped: a page that opens a tab for another site when you click anywhere on it, rather than on a link to that site, gets no tab. Sites that hide their ads behind every click, such as streaming sites, can be used again. Links that open in a new tab, a site's own pages, and sign-in and payment windows open as before. When a button you pressed really did mean to open another site, the line at the bottom says "Blocked a pop-up to …" with Open, which opens it. Off on a site where Shield is paused
 - Sync with iCloud, off unless you turn it on in Settings › General › Your browser: your open tabs, pins, spaces, bookmarks and a few settings, with Search on your iPhone (in beta on TestFlight) and your other Macs. Through your own iCloud, end to end encrypted; private tabs, history, passwords, cookies and sign-ins never go, and nothing leaves the Mac until you turn it on. Another Mac's open tabs show under History and in the address field.
 
 - A tab pulled down out of the top row comes off it: a small pill with its title follows the hand, and letting go opens it in a window of its own right there, on whichever screen that is, or puts it in the Search window it was let go over. Brought back to the row before letting go, it stays. As in Chrome and Safari; a pin, or the only tab of the only window, stays where it is

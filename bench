@@ -120,6 +120,8 @@
     ./bench news PATH [notes] | on     test run: the card after an update, or every version's notes, to a
                                        PNG; on: the card in the window
     ./bench quit                       test run: quit the app as ⌘Q does
+    ./bench notice [open]              test run: the line at the window's bottom, and what it offers;
+                                       open: press it (a refused pop-up opens after all)
     ./bench middle ID X Y              test run: the middle button clicked at X Y of a tab's page
     ./bench rdrag ID X Y DX [STEPS] [MS] [DY]
                                        test run: the right button held at X Y of a tab's page, drawn DX points
@@ -626,6 +628,9 @@ def main(argv):
     elif verb == "accounts":
         if len(args) not in (0, 1) or (args and not args[0].isdigit()): sys.exit("usage: bench accounts [ROW]")
         if args: request["pick"] = int(args[0])
+    elif verb == "notice":
+        if args not in ([], ["open"]): sys.exit("usage: bench notice [open]")
+        if args: request["action"] = "open"
     elif verb not in ("tabs", "probe", "extensions", "import-preview", "quit"):
         sys.exit(f"unknown command “{verb}” — see bench help")
 

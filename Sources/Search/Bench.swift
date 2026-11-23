@@ -694,6 +694,19 @@ final class Bench {
             answer(["quitting": true])
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
 
+        case "notice":
+            // The line that rises from the bottom (Browser.announce), and
+            // its button pressed, as a click on it does.
+            guard Store.testing else { answer(["error": "notice only works on a --test run"]); return }
+            let offers = browser.announcedOpen?.url.absoluteString ?? ""
+            if request["action"] as? String == "open" {
+                guard !offers.isEmpty else { answer(["error": "the line offers nothing to open"]); return }
+                browser.openRefused()
+                answer(["opened": offers])
+                return
+            }
+            answer(["text": browser.announcement ?? "", "opens": offers])
+
         case "windows":
             // The windows, oldest first, and what the tests do to them. Only
             // on a SEARCH_PROBE run: it opens and closes windows.
@@ -3157,6 +3170,8 @@ final class Bench {
             "awakeBecause": browser?.awake(because: tab) ?? "",
             "sleepAnswer": tab.sleepAnswer ?? "",
             "usualAbsence": Int(Doze.usualAbsence(tab)),
+            // New tabs the pop-up guard refused this page, by site (PopupGuard.swift).
+            "refusedPopups": tab.refusedPopups,
         ]
     }
 
