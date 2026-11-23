@@ -71,7 +71,7 @@ private struct PaneLayers: View {
     @ViewBuilder
     private var whose: some View {
         if paired, !focused, hovered || browser.folded, let host = tab.address?.host(), !tab.isBlank {
-            Text(host.hasPrefix("www.") ? String(host.dropFirst(4)) : host)
+            Text(host.withoutWWW)
                 .font(.system(size: 11.5))
                 .foregroundStyle(Palette.muted)
                 .lineLimit(1)

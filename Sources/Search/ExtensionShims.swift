@@ -43,13 +43,30 @@ enum ExtensionShims {
     /// extensions prepared before are prepared again.
     nonisolated private static let preparation = "2"
     nonisolated static let version: String = {
-        SHA256.hash(data: Data((script + PasskeyRelay.page + preparation).utf8)).prefix(8).map { String(format: "%02x", $0) }.joined() + (Store.testing ? "-test" : "")
+        shortHash(script + PasskeyRelay.page + preparation) + (Store.testing ? "-test" : "")
     }()
 
     /// `fresh`: a package just unpacked or copied in. What only Search writes
     /// beside an extension — which permissions it added, which shim it
     /// carries — is Search's to say, never the package's: anything by those
     /// names that came inside it goes before a word of it is read.
+    /// What Search wrote into an extension's manifest itself, not asked
+    /// for by the extension: noted in .search-added by `prepare`.
+    nonisolated static func added(in folder: URL) -> [String] {
+        (try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(".search-added")))) as? [String] ?? []
+    }
+
+    /// The permissions the manifest names, Search's additions included.
+    nonisolated static func declared(in folder: URL) -> [String] {
+        ((try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("manifest.json")))) as? [String: Any])?["permissions"] as? [String] ?? []
+    }
+
+    /// Sixteen hex letters of a text's SHA-256: a name that changes when
+    /// the text does.
+    nonisolated static func shortHash(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
     nonisolated static func prepare(_ folder: URL, fresh: Bool = false) throws {
         let files = FileManager.default
         if fresh {
@@ -72,7 +89,7 @@ enum ExtensionShims {
         // described by what it asked for, not by what Search gave it.
         var permissions = manifest["permissions"] as? [Any] ?? []
         let asked = Set(permissions.compactMap { $0 as? String })
-        var added = (try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(".search-added")))) as? [String] ?? []
+        var added = ExtensionShims.added(in: folder)
         for needed in ["nativeMessaging"] + (asked.contains("userScripts") ? ["scripting"] : []) where !asked.contains(needed) {
             permissions.append(needed)
             added.append(needed)
@@ -4607,7 +4624,7 @@ enum ExtensionShims {
               let args = String(data: data, encoding: .utf8)
         else { throw Unsupported(what: "Invalid script function or arguments") }
         let source = "(\(function))(...\(args))\n"
-        let name = "script-" + SHA256.hash(data: Data(source.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined() + ".js"
+        let name = "script-" + shortHash(source) + ".js"
         let dir = folder.appendingPathComponent("_search", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(name)
@@ -4665,7 +4682,7 @@ enum ExtensionShims {
         \#(code)
         }
         """#
-        let name = "us-" + SHA256.hash(data: Data(text.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined() + ".js"
+        let name = "us-" + shortHash(text) + ".js"
         let dir = folder.appendingPathComponent("_search", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(name)

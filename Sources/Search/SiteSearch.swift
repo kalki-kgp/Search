@@ -85,7 +85,7 @@ enum SiteSearch {
         let word = typed.trimmingCharacters(in: .whitespaces).lowercased()
         guard word.count >= 2, !word.contains(" "), !word.contains("/") else { return nil }
         func names(_ site: SearchSite) -> [String] {
-            let host = site.host.hasPrefix("www.") ? String(site.host.dropFirst(4)) : site.host
+            let host = site.host.withoutWWW
             return [site.name.lowercased().replacingOccurrences(of: " ", with: ""), host] + site.aliases
         }
         let found = builtIn.filter { site in names(site).contains { $0.hasPrefix(word) } }
@@ -167,7 +167,7 @@ enum SiteSearch {
 
     private static func bare(_ host: String) -> String {
         let first = host.split(separator: "/").first.map(String.init) ?? host
-        return first.hasPrefix("www.") ? String(first.dropFirst(4)) : first
+        return first.withoutWWW
     }
 
     /// An address's host, without its www — a template's with its %s filled.
@@ -175,7 +175,7 @@ enum SiteSearch {
         guard let url = URL(string: address.replacingOccurrences(of: "%s", with: "x")),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               let host = url.host()?.lowercased(), !host.isEmpty else { return nil }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        return host.withoutWWW
     }
 
     /// `address` is on the same site as `host` — the same registrable

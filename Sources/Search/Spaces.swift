@@ -84,9 +84,8 @@ enum Spaces {
     }
 
     static func write(_ spaces: [Space]) {
-        guard let data = try? JSONEncoder().encode(spaces) else { return }
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: file, options: .atomic)
+        // At once: a window opened next reads the file (Browser.spaces).
+        Disk.write(file, now: true) { try? JSONEncoder().encode(spaces) }
         // Every window's list follows (see Browser.init).
         NotificationCenter.default.post(name: changed, object: spaces)
     }

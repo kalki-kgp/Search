@@ -525,8 +525,8 @@ final class Extensions: NSObject, ObservableObject {
     }
 
     private func save() {
-        try? FileManager.default.createDirectory(at: Extensions.folder, withIntermediateDirectories: true)
-        try? JSONEncoder().encode(installed).write(to: Extensions.list, options: .atomic)
+        let snapshot = installed
+        Disk.write(Extensions.list) { try? JSONEncoder().encode(snapshot) }
     }
 
     // MARK: - installing
@@ -1025,8 +1025,8 @@ final class Extensions: NSObject, ObservableObject {
     /// APIs Search answers for it (history, bookmarks…) — an update that
     /// adds any of them is asked about again.
     static func grants(_ found: WKWebExtension, in folder: URL) -> [String] {
-        let added = Set((try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(".search-added")))) as? [String] ?? [])
-        let declared = ((try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("manifest.json")))) as? [String: Any])?["permissions"] as? [String] ?? []
+        let added = Set(ExtensionShims.added(in: folder))
+        let declared = ExtensionShims.declared(in: folder)
         let ours = Set(Extensions.searchAnswered.map(\.0))
         var out = Set(found.requestedPermissions.map(\.rawValue).filter { !added.contains($0) })
         out.formUnion(found.allRequestedMatchPatterns.map { "site:" + $0.string })
@@ -1094,7 +1094,7 @@ final class Extensions: NSObject, ObservableObject {
     /// added there doesn't count as asked.
     static func asksForNative(_ context: WKWebExtensionContext) -> Bool {
         let folder = Extensions.folder(for: context.uniqueIdentifier)
-        let added = Set((try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(".search-added")))) as? [String] ?? [])
+        let added = Set(ExtensionShims.added(in: folder))
         let required = context.webExtension.requestedPermissions.contains(.nativeMessaging) && !added.contains("nativeMessaging")
         // An optional one is read from the manifest, not from WebKit's
         // optionalPermissions: a permission named in both lists is only
@@ -1134,8 +1134,8 @@ final class Extensions: NSObject, ObservableObject {
     static func describe(_ found: WKWebExtension, in folder: URL) -> [String] {
         var out: [String] = []
         // Leaving out what Search itself added to the manifest.
-        let added = Set((try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(".search-added")))) as? [String] ?? [])
-        let declared = Set(((try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("manifest.json")))) as? [String: Any])?["permissions"] as? [String] ?? [])
+        let added = Set(ExtensionShims.added(in: folder))
+        let declared = Set(ExtensionShims.declared(in: folder))
         let patterns = found.allRequestedMatchPatterns
         if patterns.contains(where: { $0.matchesAllHosts || $0.matchesAllURLs }) {
             out.append("Read and change everything on every website")
@@ -1868,10 +1868,8 @@ private struct ExtensionActions: View {
 func extensionMenuPicture() -> NSBitmapImageRep? {
     let host = NSHostingView(rootView: ExtensionMenu(extensions: .shared))
     host.frame = NSRect(origin: .zero, size: host.fittingSize)
-    let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-    window.appearance = NSApp.effectiveAppearance
-    window.contentView = host
-    host.layoutSubtreeIfNeeded()
+    let window = Offstage.window(for: host)
+    defer { withExtendedLifetime(window) {} }
     guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
     host.cacheDisplay(in: host.bounds, to: picture)
     return picture

@@ -144,20 +144,14 @@ enum Web {
     /// isInspectable alone only lets Safari's Develop menu reach the page.
     /// The name is outside the public framework, so it is asked first.
     static func inspector(_ preferences: WKPreferences, on: Bool = true) {
-        let set = NSSelectorFromString("_setDeveloperExtrasEnabled:")
-        guard preferences.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, on)
+        Unlisted.set("_setDeveloperExtrasEnabled:", on: preferences, to: on)
     }
 
     /// A test run's pretend camera and microphone, so the capture corner can
     /// be tried without the real ones (`defaults write … capture.mock`).
     static func mockCapture(_ preferences: WKPreferences) {
         guard Store.world != nil, Store.settings.bool(forKey: "capture.mock") else { return }
-        let set = NSSelectorFromString("_setMockCaptureDevicesEnabled:")
-        guard preferences.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, true)
+        Unlisted.set("_setMockCaptureDevicesEnabled:", on: preferences, to: true)
     }
 }
 
@@ -236,10 +230,7 @@ enum Autoplay {
     static func apply(to preferences: WKWebpagePreferences, for url: URL, shy: Bool) {
         guard !shy, let host = url.host(), allowed(host),
               !Store.settings.bool(forKey: Preferences.waitsKey) else { return }
-        let set = NSSelectorFromString("_setAutoplayPolicy:")
-        guard preferences.responds(to: set) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Int) -> Void
-        unsafeBitCast(preferences.method(for: set), to: Setter.self)(preferences, set, 1)
+        Unlisted.set("_setAutoplayPolicy:", on: preferences, to: 1)
     }
 }
 
@@ -724,7 +715,7 @@ final class Tab: ObservableObject, Identifiable {
     var label: String {
         if let name, !name.isEmpty { return name }
         if popup, let host = address?.host(), !host.isEmpty {
-            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            return host.withoutWWW
         }
         if !title.isEmpty { return title }
         if let address { return Address.pretty(address) }
@@ -1105,7 +1096,7 @@ final class Tab: ObservableObject, Identifiable {
         // later it may be somewhere else entirely, and that is not where
         // the password belongs.
         guard let host = pageAddress?.host()?.lowercased() else { return }
-        let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let bare = host.withoutWWW
         sent = (bare, user, password, pageAddress?.scheme?.lowercased() == "http", Date())
     }
 
@@ -1153,7 +1144,7 @@ final class Tab: ObservableObject, Identifiable {
     /// when this was offered, are gone by the time it actually runs.
     func fill(user: String, password: String, done: ((Bool) -> Void)? = nil) {
         web.evaluateInSearch(
-            "window.__officeForms && window.__officeForms.fill(`\(escape(user))`, `\(escape(password))`)"
+            "window.__officeForms && window.__officeForms.fill(\(JS.literal(user)), \(JS.literal(password)))"
         ) { result in
             done?((result as? Bool) ?? false)
         }
@@ -1166,19 +1157,14 @@ final class Tab: ObservableObject, Identifiable {
     /// Show one hidden thing while the pointer rests on its row in the list.
     func peek(_ selector: String, keeping css: String) {
         web.evaluateInSearch(
-            "window.__officeVeil && window.__officeVeil.peek(`\(escape(css))`, `\(escape(selector))`)"
+            "window.__officeVeil && window.__officeVeil.peek(\(JS.literal(css)), \(JS.literal(selector)))"
         )
     }
 
     func unpeek(_ css: String) {
-        web.evaluateInSearch("window.__officeVeil && window.__officeVeil.unpeek(`\(escape(css))`)")
+        web.evaluateInSearch("window.__officeVeil && window.__officeVeil.unpeek(\(JS.literal(css)))")
     }
 
-    private func escape(_ text: String) -> String {
-        text.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "`", with: "\\`")
-            .replacingOccurrences(of: "$", with: "\\$")
-    }
     func pickingEnded() { onPickEnd?(self) }
     func pickingFailed(_ reason: String) { onPickTrouble?(self, reason) }
 
@@ -2209,10 +2195,7 @@ final class PageView: WKWebView {
     /// public framework, so it is asked whether it answers to them first. One
     /// that doesn't gets a view shown straight away, as before.
     func holdForFirstFrame() {
-        let observe = NSSelectorFromString("_setObservedRenderingProgressEvents:")
-        guard responds(to: observe) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, UInt) -> Void
-        unsafeBitCast(method(for: observe), to: Setter.self)(self, observe, PageView.firstFrame)
+        guard Unlisted.set("_setObservedRenderingProgressEvents:", on: self, to: PageView.firstFrame) else { return }
         unpainted = true
         alphaValue = 0
     }
@@ -2720,5 +2703,15 @@ extension WKWebView {
         evaluateJavaScript(js, in: nil, in: Web.world) { result in
             then?(try? result.get())
         }
+    }
+}
+
+enum JS {
+    /// A Swift string written as a JavaScript string literal, quotes and
+    /// all, safe to put in a script whatever it holds: JSON's own escaping.
+    static func literal(_ text: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: [text])
+        let array = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        return String(array.dropFirst().dropLast())
     }
 }

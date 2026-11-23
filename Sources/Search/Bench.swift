@@ -685,19 +685,7 @@ final class Bench {
                 : AnyView(WhatsNewCard(release: release, prefs: browser.prefs, close: {}, notes: {}).padding(40).background(Palette.ground))
             let host = NSHostingView(rootView: root)
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
-            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.appearance = NSApp.effectiveAppearance
-            window.contentView = host
-            host.layoutSubtreeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { answer(["error": "nothing drawn"]); return }
-                host.cacheDisplay(in: host.bounds, to: picture)
-                do {
-                    try picture.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-                    answer(["saved": path, "size": [Int(host.bounds.width), Int(host.bounds.height)]])
-                } catch { answer(["error": error.localizedDescription]) }
-                window.contentView = nil
-            }
+            Offstage.save(host, after: 0.4, to: path, answer)
 
         case "quit":
             // ⌘Q, on a test run: the app ends the way it does for you, the
@@ -2073,15 +2061,9 @@ final class Bench {
             stage.removeFromSuperview()
             stage.frame = NSRect(origin: .zero, size: place.size)
             hall.contentView?.addSubview(stage)
-            let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-            typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-            if web.responds(to: occlusion) {
-                unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
-            }
+            Unlisted.set("_setWindowOcclusionDetectionEnabled:", on: web, to: false)
             func giveBack() {
-                if web.responds(to: occlusion) {
-                    unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, true)
-                }
+                Unlisted.set("_setWindowOcclusionDetectionEnabled:", on: web, to: true)
                 stage.removeFromSuperview()
                 stage.frame = place
                 if let after, after.superview === home {
@@ -2383,19 +2365,7 @@ final class Bench {
             let width = request["width"] as? Double ?? 1100
             let host = NSHostingView(rootView: TabBar(browser: browser).frame(width: width, height: Metrics.strip).background(Palette.ground))
             host.frame = NSRect(x: 0, y: 0, width: width, height: Double(Metrics.strip))
-            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.appearance = NSApp.effectiveAppearance
-            window.contentView = host
-            host.layoutSubtreeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { answer(["error": "nothing drawn"]); return }
-                host.cacheDisplay(in: host.bounds, to: picture)
-                do {
-                    try picture.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-                    answer(["saved": path])
-                } catch { answer(["error": error.localizedDescription]) }
-                window.contentView = nil
-            }
+            Offstage.save(host, after: 0.3, to: path, answer)
 
         case "pdf":
             // The page on screen as File › Export as PDF… makes it, without
@@ -2454,19 +2424,7 @@ final class Bench {
                 Fold(browser: browser, prefs: browser.prefs)
             }.frame(width: size.width, height: size.height))
             host.frame = NSRect(origin: .zero, size: size)
-            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.appearance = NSApp.effectiveAppearance
-            window.contentView = host
-            host.layoutSubtreeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { answer(["error": "nothing drawn"]); return }
-                host.cacheDisplay(in: host.bounds, to: picture)
-                do {
-                    try picture.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-                    answer(["saved": path])
-                } catch { answer(["error": error.localizedDescription]) }
-                window.contentView = nil
-            }
+            Offstage.save(host, after: 0.6, to: path, answer)
 
         case "little":
             // A small window for a link, made without being shown (see
@@ -2495,20 +2453,7 @@ final class Bench {
             // On the ground: off screen there is no glass to stand on.
             let host = NSHostingView(rootView: AnyView(SiteCard(browser: browser, tab: tab, deeper: deeper) {}.fixedSize().background(Palette.ground)))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
-            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.appearance = NSApp.effectiveAppearance
-            window.contentView = host
-            host.layoutSubtreeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                host.frame = NSRect(origin: .zero, size: host.fittingSize)
-                guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { answer(["error": "nothing drawn"]); return }
-                host.cacheDisplay(in: host.bounds, to: picture)
-                do {
-                    try picture.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-                    answer(["saved": path])
-                } catch { answer(["error": error.localizedDescription]) }
-                window.contentView = nil
-            }
+            Offstage.save(host, after: 0.6, refit: true, to: path, answer)
 
         case "column":
             // The column of tabs, drawn off screen at its width, with what the
@@ -2519,19 +2464,7 @@ final class Bench {
             let width = Double(browser.prefs.sideWidth)
             let host = NSHostingView(rootView: SideBar(browser: browser, prefs: browser.prefs).frame(width: width, height: height))
             host.frame = NSRect(x: 0, y: 0, width: width, height: height)
-            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.appearance = NSApp.effectiveAppearance
-            window.contentView = host
-            host.layoutSubtreeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { answer(["error": "nothing drawn"]); return }
-                host.cacheDisplay(in: host.bounds, to: picture)
-                do {
-                    try picture.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-                    answer(["saved": path])
-                } catch { answer(["error": error.localizedDescription]) }
-                window.contentView = nil
-            }
+            Offstage.save(host, after: 0.4, to: path, answer)
 
         case "space":
             // The spaces, and switching between them, for a test of what a
@@ -3355,10 +3288,7 @@ final class Bench {
     /// nothing, and runs little, for a page it thinks nobody sees. This one
     /// is told it is seen.
     static func uncover(_ web: WKWebView) {
-        let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-        guard web.responds(to: occlusion) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(web.method(for: occlusion), to: Setter.self)(web, occlusion, false)
+        Unlisted.set("_setWindowOcclusionDetectionEnabled:", on: web, to: false)
     }
 
     private func makeRoom() -> NSWindow {
@@ -3503,7 +3433,7 @@ final class Bench {
     }
 
     private static func locate(_ selector: String) -> String {
-        let sel = (try? JSONSerialization.data(withJSONObject: [selector])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        let sel = JS.literal(selector)
         return """
         (function () {
           var s = \(sel), el = null;
@@ -3591,8 +3521,8 @@ final class Bench {
     /// through the field's own setter and fires the events a keystroke
     /// would, the same as the password filler, so frameworks notice.
     private static func act(_ verb: String, selector: String, text: String) -> String {
-        let sel = (try? JSONSerialization.data(withJSONObject: [selector])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
-        let txt = (try? JSONSerialization.data(withJSONObject: [text])).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        let sel = JS.literal(selector)
+        let txt = JS.literal(text)
         return """
         (function () {
           var s = \(sel);
@@ -3623,5 +3553,36 @@ final class Bench {
           return 'ok';
         })();
         """
+    }
+}
+
+/// A view drawn alone, in a window of its own that is never on a screen:
+/// for pictures of one part of the window, the bench's and the tests'.
+@MainActor
+enum Offstage {
+    /// The window, kept by the caller for as long as the view is drawn.
+    static func window(for host: NSView) -> NSWindow {
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.appearance = NSApp.effectiveAppearance
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        return window
+    }
+
+    /// Given `wait` to settle, saved as a PNG at `path`. `refit` sizes the
+    /// view to fit once more first, for one that grows as it fills in.
+    static func save(_ host: NSView, after wait: Double, refit: Bool = false, to path: String,
+                     _ answer: @escaping ([String: Any]) -> Void) {
+        let window = window(for: host)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+            if refit { host.frame = NSRect(origin: .zero, size: host.fittingSize) }
+            guard let picture = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { answer(["error": "nothing drawn"]); return }
+            host.cacheDisplay(in: host.bounds, to: picture)
+            do {
+                try picture.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                answer(["saved": path, "size": [Int(host.bounds.width), Int(host.bounds.height)]])
+            } catch { answer(["error": error.localizedDescription]) }
+            window.contentView = nil
+        }
     }
 }

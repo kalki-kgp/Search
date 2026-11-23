@@ -222,7 +222,7 @@ struct SiteCard: View {
     /// a file, about:blank — is named by what it is.
     static func site(_ url: URL) -> String {
         if let host = url.host(), !host.isEmpty {
-            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            return host.withoutWWW
         }
         if url.isFileURL { return "File" }
         return url.scheme ?? url.absoluteString

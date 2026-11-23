@@ -2230,7 +2230,7 @@ final class Browser: NSObject, ObservableObject {
 
     private static func site(of url: URL) -> String? {
         guard let host = url.host()?.lowercased(), !host.isEmpty else { return nil }
-        let name = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let name = host.withoutWWW
         return url.port.map { "\(name):\($0)" } ?? name
     }
 

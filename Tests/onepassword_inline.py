@@ -98,16 +98,6 @@ def unpacked(gate_open):
     return folder
 
 
-def probe_copy():
-    app = work / "Search.app"
-    shutil.copytree(Path(sv.ROOT, "build", "Search.app"), app, symlinks=True)
-    subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Set :CFBundleIdentifier {BUNDLE}", str(app / "Contents/Info.plist")], check=True)
-    (app / "Contents/embedded.provisionprofile").unlink(missing_ok=True)
-    subprocess.run(["codesign", "-f", "-s", "-", "--entitlements", str(Path(sv.ROOT, "Search.entitlements")), "--deep", str(app)],
-                   check=True, capture_output=True)
-    return str(app)
-
-
 def until(tid, js, within):
     end = time.time() + within
     value = None
@@ -146,7 +136,7 @@ def main():
     t.ok("1Password's extension is as this probe knows it", plain is not None and opened is not None)
     if not plain or not opened:
         return t
-    sv.APP = probe_copy()
+    sv.APP = sv.probe_copy(work, BUNDLE)
     try:
         sv.setup()
         sv.launch()

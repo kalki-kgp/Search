@@ -269,7 +269,7 @@ final class Passkeys: NSObject {
         }
         let scheme = caller.origin.protocol.lowercased()
         let host = caller.origin.host.lowercased()
-        let local = host == "localhost" || host.hasSuffix(".localhost") || host == "127.0.0.1" || host == "::1"
+        let local = host.hasSuffix(".localhost") || Dialogs.isLoopback(host)
         guard !host.isEmpty, scheme == "https" || (scheme == "http" && local) else {
             return refuse(answer, "NotAllowedError", "Passkeys need a secure page.")
         }
